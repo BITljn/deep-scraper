@@ -32,7 +32,25 @@ Open-source Python library. Fetches tweets via Nitter backend without login or A
 - Fallback modes: Nitter (fastest) → Playwright (browser-based)
 - Risk: Nitter instances can be unstable; the collector must handle failures gracefully
 
-### 4. Financial News — Longbridge or RSS (Phase 2)
+### 4. VIX Fear Index — Yahoo Finance (yfinance)
+
+CBOE Volatility Index (^VIX) measures market-wide fear/greed sentiment. Free via `yfinance` Python library.
+
+| Capability | Method | Notes |
+|-----------|--------|-------|
+| Current VIX | `yf.Ticker("^VIX").info` | Real-time VIX level |
+| Historical VIX | `yf.Ticker("^VIX").history(period="1y")` | Daily OHLC history |
+| Intraday VIX | `yf.download("^VIX", interval="5m")` | 5-min intraday (last 60 days) |
+
+VIX interpretation:
+- < 15: Low fear, complacency
+- 15-25: Normal range
+- 25-35: Elevated fear
+- > 35: Extreme fear / panic
+
+VIX is a **contrarian signal** for growth stocks like TSLA — extreme fear (VIX spike) often precedes mean-reversion rallies; low VIX + bullish sentiment can signal complacency risk.
+
+### 5. Financial News — Longbridge or RSS (Phase 2)
 
 Deferred to a later phase. The architecture will include a `NewsCollector` interface for future integration.
 
@@ -63,6 +81,7 @@ Deferred to a later phase. The architecture will include a `NewsCollector` inter
 │    /api/backtest    — 回测执行与结果                          │
 │    /api/indicators  — 综合指标时间序列                        │
 │    /api/collect     — 手动触发数据采集 (POST)                 │
+│    /api/vix         — VIX恐慌指数数据                        │
 │                                                              │
 │  Services:                                                   │
 │    CollectorService    — 调度各数据源采集器                   │
@@ -72,7 +91,8 @@ Deferred to a later phase. The architecture will include a `NewsCollector` inter
 │  Scheduler (APScheduler):                                    │
 │    - 股价采集: 每5分钟 (交易时段)                             │
 │    - 舆情采集: 每30分钟                                      │
-│    - 推文采集: 每60分钟                                      │
+│    - 推文采集: 每10分钟                                      │
+│    - VIX采集: 每5分钟 (交易时段)                              │
 │    - 指标计算: 每次采集完成后触发                             │
 └──────────────────────┬───────────────────────────────────────┘
                        │
@@ -85,6 +105,7 @@ Deferred to a later phase. The architecture will include a `NewsCollector` inter
 │    topics             — 长桥社区帖子                          │
 │    topic_replies      — 帖子回复                              │
 │    tweets             — 马斯克推文                            │
+│    vix_data           — VIX恐慌指数历史                       │
 │    sentiment_scores   — NLP情绪分析结果                       │
 │    indicators         — 计算后的指标时间序列                  │
 │    backtest_results   — 回测结果                              │
@@ -188,6 +209,23 @@ CREATE TABLE tweets (
 CREATE INDEX idx_tweets_user_time ON tweets(username, published_at DESC);
 ```
 
+### vix_data
+
+```sql
+CREATE TABLE vix_data (
+    id         BIGSERIAL PRIMARY KEY,
+    ts         TIMESTAMPTZ NOT NULL,
+    open       DECIMAL(8,4),
+    high       DECIMAL(8,4),
+    low        DECIMAL(8,4),
+    close      DECIMAL(8,4),
+    period     VARCHAR(10) NOT NULL DEFAULT 'day',  -- "5min","day"
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(ts, period)
+);
+CREATE INDEX idx_vix_time ON vix_data(ts DESC);
+```
+
 ### sentiment_scores
 
 ```sql
@@ -227,6 +265,10 @@ CREATE TABLE indicators (
     ms_tweet_count    INT,
     ms_sentiment      DECIMAL(5,4),
     ms_tesla_mention  BOOLEAN,
+    -- VIX Fear Index
+    vix_level         DECIMAL(8,4),
+    vix_change        DECIMAL(8,4),           -- % change from previous bucket
+    vix_regime        VARCHAR(10),            -- "low","normal","elevated","extreme"
     -- Composite
     tarco_score       DECIMAL(5,2),           -- 0.00 to 100.00
     tarco_signal      VARCHAR(10),            -- "bullish","bearish","neutral"
@@ -337,19 +379,42 @@ TESLA_KEYWORDS = ["tesla", "tsla", "$tsla", "model s", "model 3", "model x",
                    "autopilot", "gigafactory", "supercharger"]
 ```
 
-### 5. Tarco Score (Composite)
+### 5. VIX Fear Index Signal (VFS)
+
+VIX as a contrarian/confirming indicator for TSLA positioning.
+
+```
+vix_level   = current VIX close value
+vix_change  = (vix_t - vix_{t-1}) / vix_{t-1}   (rate of change)
+vix_regime:
+    < 15  → "low"       (complacency — contrarian risk for longs)
+    15-25 → "normal"
+    25-35 → "elevated"  (fear rising — watch for capitulation)
+    > 35  → "extreme"   (panic — contrarian buy signal for growth stocks)
+
+VFS_composite:
+    When vix_regime="extreme" AND SPS trending positive → strong bullish signal
+    When vix_regime="low" AND SPS turning negative → complacency risk signal
+    When vix_change > +20% in one day → volatility shock event
+```
+
+The VIX signal is used both as a standalone indicator and as a **regime filter** for TarcoScore — the same SPS score has different implications in high-fear vs low-fear environments.
+
+### 6. Tarco Score (Composite)
 
 ```
 TarcoScore = w1 × normalize(DHI_zscore) +
              w2 × normalize(SPS_mean) +
              w3 × normalize(EM_composite) +
-             w4 × normalize(MS_composite)
+             w4 × normalize(MS_composite) +
+             w5 × normalize(VFS_composite)
 
 Default weights (before backtesting optimization):
-  w1 = 0.25 (discussion heat)
-  w2 = 0.35 (sentiment polarity — highest weight, most directly predictive)
-  w3 = 0.15 (engagement structure)
-  w4 = 0.25 (musk signal — historically high impact on TSLA)
+  w1 = 0.20 (discussion heat)
+  w2 = 0.30 (sentiment polarity — highest weight)
+  w3 = 0.10 (engagement structure)
+  w4 = 0.20 (musk signal — high impact on TSLA)
+  w5 = 0.20 (VIX fear index — macro regime context)
 
 normalize(): min-max scale to [0, 100] using 90-day rolling window
 
@@ -357,6 +422,13 @@ Signal:
   TarcoScore > 65 → "bullish"
   TarcoScore < 35 → "bearish"
   else → "neutral"
+
+Regime-adjusted signal (Phase 1):
+  When vix_regime="extreme":
+    bullish threshold lowered to 55 (fear-driven opportunity)
+    bearish threshold lowered to 25 (only strong bearish signals count in panic)
+  When vix_regime="low":
+    bullish threshold raised to 75 (require stronger conviction in complacent market)
 ```
 
 ---
@@ -389,7 +461,10 @@ Each of these gets a full backtest report:
 - SPS_mean alone
 - EM_composite alone
 - MS_composite alone
+- VFS_composite alone
+- VIX_level alone (contrarian signals at extremes)
 - TarcoScore (composite)
+- TarcoScore regime-adjusted (with VIX-dynamic thresholds)
 
 ### Weight Optimization
 
@@ -407,7 +482,9 @@ After initial backtesting with default weights, run a grid search over weight co
 | Candlesticks | Every 15 min (market hours) | Latest candles since last fetch |
 | Community topics | Every 30 min | New/updated topics for TSLA.US |
 | Topic replies | Every 30 min | New replies for active topics (last 7 days) |
-| Musk tweets | Every 60 min | Latest tweets from @elonmusk |
+| Musk tweets | Every 10 min | Latest tweets from @elonmusk |
+| VIX index | Every 5 min (market hours) | Real-time VIX snapshot |
+| VIX daily history | Once daily (after market close) | Full day OHLC |
 | Indicator compute | After each collection cycle | Recompute current bucket |
 
 ### Manual Trigger
@@ -415,7 +492,7 @@ After initial backtesting with default weights, run a grid search over weight co
 `POST /api/collect` accepts:
 ```json
 {
-  "job_type": "all" | "quote" | "topic" | "tweet",
+  "job_type": "all" | "quote" | "topic" | "tweet" | "vix",
   "symbol": "TSLA.US"
 }
 ```
@@ -434,43 +511,77 @@ All collectors use **incremental fetching**:
 - Topics: fetch full list, UPSERT by topic ID (update engagement counts)
 - Replies: for each active topic, fetch from last stored reply timestamp
 - Tweets: fetch timeline, skip already-stored tweet IDs
+- VIX: always fetch latest snapshot (append-only); daily history backfill on startup
 
 ---
 
 ## Frontend Design
 
+### Visual Identity — Tesla / SpaceX Futuristic Aesthetic
+
+The UI follows a **mission control / HUD** design language inspired by Tesla vehicle UI, SpaceX launch dashboards, and sci-fi command centers.
+
+**Design System:**
+- **Background**: Near-black (#0a0a0f) with subtle radial gradient mesh overlays
+- **Surface**: Glassmorphism cards — `rgba(255,255,255,0.03)` with `backdrop-filter: blur(20px)`, thin `1px` borders at `rgba(255,255,255,0.06)`
+- **Primary accent**: Electric cyan (#00d4ff) — used for key metrics, active states, chart highlights
+- **Secondary accent**: Neon green (#00ff88) for bullish/positive, crimson red (#ff3366) for bearish/negative
+- **Neutral text**: #e0e0e6 (primary), #6b6b7b (secondary)
+- **Typography**: `Space Grotesk` (headings — geometric, technical), `JetBrains Mono` (numbers/data — monospaced for alignment), `Inter` (body text)
+- **Glow effects**: Key metrics get a subtle `box-shadow: 0 0 30px rgba(0,212,255,0.15)` glow halo
+- **Animations**: Staggered fade-in on page load, smooth number counting transitions, pulse glow on live data updates
+- **Grid**: CSS Grid with asymmetric layouts — no boring equal-column rows; hero metrics get visual dominance
+- **Micro-interactions**: Data refresh ripple effect, chart crosshair follows mouse with glow trail, card hover lift with border glow intensification
+
+**Chart Theme:**
+- Dark background, no grid lines (minimal axis ticks only)
+- Candlestick: Hollow green up / solid red down, with volume bars in subtle translucent fill
+- Line charts: Gradient fill under curve (cyan→transparent), line glow effect
+- VIX overlay: Orange/amber color palette to contrast with TSLA cyan
+
 ### Pages
 
-**1. Dashboard (Home)**
-- Hero: Current TSLA price, change %, TarcoScore gauge (0-100)
-- K-line chart (ECharts) with indicator overlays (DHI, SPS as subplot)
-- Manual trigger button: `[🔄 拉取最新数据]` with status indicator
-- Last update timestamp
+**1. Command Center (Dashboard Home)**
+- **Hero row**: TSLA price (large, monospaced, with counting animation), change %, TarcoScore as radial gauge with gradient arc (red→amber→cyan→green), VIX level with regime badge (glowing color-coded pill)
+- **K-line chart**: Full-width ECharts candlestick with dark theme, indicator overlays (DHI, SPS as subplot panels below), VIX as a faint amber line overlay on price chart
+- **Indicator strip**: Horizontal row of mini spark-charts for each sub-indicator (DHI, SPS, EM, MS, VFS) — click to expand
+- **Manual trigger**: Floating action button bottom-right with pulse animation, click → ripple + spinner → status toast
+- **Live status bar**: Bottom strip showing last update times for each data source, connection health dots
 
-**2. Sentiment Panel**
-- Community topic list (sortable by time, engagement, sentiment)
-- Sentiment trend chart (SPS over time)
-- DHI heatmap showing activity bursts
-- Word cloud from recent topics/replies (Phase 2)
+**2. Sentiment Matrix**
+- **Dual-axis chart**: SPS sentiment trend (cyan line) vs TSLA price (white line) on shared time axis, VIX regime background bands (green=low, transparent=normal, amber=elevated, red=extreme)
+- **DHI heatmap**: Time × intensity grid showing community activity surges as heat blocks
+- **Topic feed**: Scrolling card list with sentiment color bar on left edge (green/red/gray), engagement metrics as badge pills
+- **Topic detail drawer**: Slide-in panel showing replies with threaded depth visualization
 
-**3. Musk Feed**
-- Tweet timeline with sentiment color coding (green/red/gray)
-- Musk activity chart (tweet frequency)
-- Tesla-mention highlights
+**3. Musk Signal**
+- **Tweet timeline**: Vertical feed with glassmorphism cards, each showing tweet text, timestamp, engagement metrics, FinBERT sentiment color badge
+- **Activity radar**: Circular chart showing tweet frequency by hour-of-day (when does Musk tweet about Tesla?)
+- **Impact tracker**: Mini chart pairing each Tesla-related tweet with subsequent price movement (overlaid arrows)
+- **Tesla mention filter**: Toggle to show only Tesla-keyword tweets
 
-**4. Backtest Report**
-- Indicator selector + window selector
-- Correlation table (all indicators × all windows)
-- Equity curve chart for signal strategy
-- Metrics cards: Sharpe, accuracy, max drawdown
-- Indicator vs price overlay chart
+**4. VIX & Fear Dashboard**
+- **VIX gauge**: Large radial gauge with regime zones color-coded (green < 15, white 15-25, amber 25-35, red > 35)
+- **VIX vs TSLA correlation chart**: Dual-axis showing inverse relationship, with highlighted divergence zones
+- **Regime history**: Timeline bar showing VIX regime changes over past 90 days
+- **Fear-Greed crossover table**: When VIX spikes intersect with sentiment shifts, show marked events with price outcome
+
+**5. Backtest Lab**
+- **Control panel**: Dark selector cards for indicator × window combinations
+- **Correlation matrix**: Heatmap grid (indicators vs windows) with color intensity = correlation strength
+- **Equity curve**: Animated line chart of simulated strategy returns, with drawdown shading
+- **Metrics dashboard**: Cards with glow borders showing Sharpe, accuracy, max drawdown, total signals
+- **Split comparison**: Side-by-side indicator vs price overlay, synchronized zoom/pan
 
 ### Component Library
 
-- Charts: **ECharts** (via echarts-for-react) — best K-line/financial chart support
-- UI: **Ant Design** — comprehensive component library with good table/form/gauge support
-- HTTP: **axios** with SWR-like polling for status updates
-- State: **React Query (TanStack Query)** for server state management
+- **Styling**: **Tailwind CSS** — full custom control for the futuristic theme, no opinionated component library
+- **Charts**: **ECharts** (via echarts-for-react) — best K-line/financial chart support, excellent dark theme
+- **UI primitives**: **Radix UI** (headless) — accessible, unstyled primitives (dialogs, dropdowns, tooltips) that we skin ourselves
+- **HTTP**: **axios** with interceptors
+- **Server State**: **TanStack Query** — caching, polling, mutation management
+- **Routing**: **React Router v7**
+- **Animations**: **Framer Motion** — staggered entrances, layout animations, number morphing
 
 ---
 
@@ -487,6 +598,7 @@ backend/
 │   │   ├── candlestick.py
 │   │   ├── topic.py
 │   │   ├── tweet.py
+│   │   ├── vix.py
 │   │   ├── sentiment.py
 │   │   ├── indicator.py
 │   │   ├── backtest.py
@@ -495,6 +607,7 @@ backend/
 │   │   ├── quotes.py
 │   │   ├── sentiment.py
 │   │   ├── tweets.py
+│   │   ├── vix.py
 │   │   ├── indicators.py
 │   │   ├── backtest.py
 │   │   └── collect.py
@@ -503,6 +616,7 @@ backend/
 │   │   ├── quote_collector.py     # Longbridge QuoteContext
 │   │   ├── topic_collector.py     # Longbridge ContentContext
 │   │   ├── tweet_collector.py     # x-tweet-fetcher wrapper
+│   │   ├── vix_collector.py      # yfinance VIX data
 │   │   └── manager.py            # CollectorManager: orchestrates all
 │   ├── analysis/                  # Indicator computation
 │   │   ├── sentiment_analyzer.py  # FinBERT NLP pipeline
@@ -521,31 +635,48 @@ frontend/
 ├── src/
 │   ├── App.tsx
 │   ├── main.tsx
+│   ├── styles/
+│   │   ├── globals.css            # Tailwind base + custom CSS vars + glow effects
+│   │   └── theme.ts               # Color tokens, typography scale
 │   ├── api/                       # API client functions
 │   │   ├── client.ts              # axios instance
 │   │   ├── quotes.ts
 │   │   ├── sentiment.ts
 │   │   ├── tweets.ts
+│   │   ├── vix.ts
 │   │   ├── indicators.ts
 │   │   ├── backtest.ts
 │   │   └── collect.ts
 │   ├── pages/
-│   │   ├── Dashboard.tsx
-│   │   ├── SentimentPanel.tsx
-│   │   ├── MuskFeed.tsx
-│   │   └── BacktestReport.tsx
+│   │   ├── Dashboard.tsx          # Command Center
+│   │   ├── SentimentMatrix.tsx    # Sentiment Matrix
+│   │   ├── MuskSignal.tsx         # Musk Signal
+│   │   ├── VixFear.tsx            # VIX & Fear Dashboard
+│   │   └── BacktestLab.tsx        # Backtest Lab
 │   ├── components/
-│   │   ├── PriceChart.tsx         # ECharts K-line
-│   │   ├── TarcoGauge.tsx         # Score gauge
-│   │   ├── IndicatorChart.tsx     # Indicator overlays
-│   │   ├── TopicList.tsx
-│   │   ├── TweetCard.tsx
-│   │   ├── CollectButton.tsx      # Manual trigger
-│   │   ├── BacktestTable.tsx
-│   │   └── EquityCurve.tsx
+│   │   ├── layout/
+│   │   │   ├── AppShell.tsx       # Main layout with nav
+│   │   │   ├── NavBar.tsx         # Side navigation
+│   │   │   └── StatusBar.tsx      # Bottom live status strip
+│   │   ├── charts/
+│   │   │   ├── PriceChart.tsx     # ECharts K-line with dark theme
+│   │   │   ├── TarcoGauge.tsx     # Radial score gauge with glow
+│   │   │   ├── VixGauge.tsx       # VIX radial gauge with regime zones
+│   │   │   ├── IndicatorChart.tsx # Indicator overlays
+│   │   │   ├── HeatMap.tsx        # DHI activity heatmap
+│   │   │   ├── CorrelationMatrix.tsx
+│   │   │   └── EquityCurve.tsx
+│   │   ├── cards/
+│   │   │   ├── GlassCard.tsx      # Glassmorphism base card
+│   │   │   ├── MetricCard.tsx     # Glowing metric display
+│   │   │   ├── TopicCard.tsx      # Sentiment-colored topic card
+│   │   │   └── TweetCard.tsx      # Tweet with sentiment badge
+│   │   ├── CollectButton.tsx      # Floating action button with pulse
+│   │   └── SparkLine.tsx          # Mini inline chart
 │   └── hooks/
 │       ├── useCollectJob.ts       # Poll job status
-│       └── useIndicators.ts
+│       ├── useIndicators.ts
+│       └── useAnimatedNumber.ts   # Counting animation hook
 ├── package.json
 ├── vite.config.ts
 └── tsconfig.json
@@ -575,13 +706,17 @@ The architecture is designed so Phase 2 can add:
 | NLP | transformers + ProsusAI/finbert | |
 | Longbridge SDK | longbridge (PyPI) | |
 | Tweet Fetcher | x-tweet-fetcher | |
+| VIX Data | yfinance | |
 | Database | PostgreSQL 16 | |
 | Frontend | React 18 + TypeScript | |
 | Build Tool | Vite | |
-| UI Library | Ant Design 5 | |
+| Styling | Tailwind CSS 4 | |
+| UI Primitives | Radix UI (headless) | |
 | Charts | ECharts (echarts-for-react) | |
+| Animations | Framer Motion | |
 | HTTP Client | axios | |
 | Server State | TanStack Query | |
+| Routing | React Router v7 | |
 
 ---
 
