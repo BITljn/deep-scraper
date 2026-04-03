@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -15,12 +16,15 @@ class VixCollector(BaseCollector):
     name = "vix"
 
     async def collect(self, symbol: str, db: AsyncSession) -> int:
+        t0 = time.monotonic()
         count = 0
         try:
             import yfinance as yf
 
+            logger.info("[vix] fetching ^VIX 3-month daily history ...")
             ticker = yf.Ticker("^VIX")
             hist = ticker.history(period="3mo", interval="1d")
+            logger.info("[vix] yfinance returned %d rows", len(hist))
 
             for ts_idx, row in hist.iterrows():
                 ts = ts_idx.to_pydatetime()
@@ -43,8 +47,10 @@ class VixCollector(BaseCollector):
                 count += 1
 
             await db.commit()
-            logger.info("VixCollector: upserted %d VIX records", count)
+            elapsed = time.monotonic() - t0
+            logger.info("[vix] OK: upserted %d records in %.1fs", count, elapsed)
         except Exception:
-            logger.exception("VixCollector failed")
+            elapsed = time.monotonic() - t0
+            logger.exception("[vix] FAILED after %.1fs (%d records before error)", elapsed, count)
             await db.rollback()
         return count

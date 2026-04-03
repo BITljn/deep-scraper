@@ -108,6 +108,21 @@ export interface BacktestResult {
   computed_at?: string;
 }
 
+export interface Fundamentals {
+  symbol: string;
+  market_cap: number | null;
+  pe_ratio: number | null;
+  forward_pe: number | null;
+  eps: number | null;
+  roe: number | null;
+  revenue: number | null;
+  profit_margin: number | null;
+  fifty_two_week_high: number | null;
+  fifty_two_week_low: number | null;
+  beta: number | null;
+  dividend_yield: number | null;
+}
+
 export interface CollectJob {
   id: number;
   job_type: string;

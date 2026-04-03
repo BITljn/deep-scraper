@@ -7,11 +7,26 @@ class Settings(BaseSettings):
     LONGBRIDGE_APP_KEY: str = ""
     LONGBRIDGE_APP_SECRET: str = ""
     LONGBRIDGE_ACCESS_TOKEN: str = ""
-    NITTER_URL: str = "https://nitter.net"
     COLLECT_SYMBOL: str = "TSLA.US"
     MUSK_USERNAME: str = "elonmusk"
 
+    # JSON array: [{"username":"u1","password":"p1","email":"e1","email_password":"ep1","cookies":"..."}]
+    TWITTER_ACCOUNTS: str = "[]"
+    TWSCRAPE_DB: str = "twscrape_accounts.db"
+
+    COLLECTOR_QUOTE_ENABLED: bool = True
+    COLLECTOR_TOPIC_ENABLED: bool = True
+    COLLECTOR_TWEET_ENABLED: bool = False
+    COLLECTOR_VIX_ENABLED: bool = False
+
+    LOG_DIR: str = "logs"
+    LOG_LEVEL: str = "INFO"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    def is_collector_enabled(self, name: str) -> bool:
+        key = f"COLLECTOR_{name.upper()}_ENABLED"
+        return getattr(self, key, False)
 
 
 @lru_cache

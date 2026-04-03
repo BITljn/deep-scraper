@@ -1,0 +1,35 @@
+---
+description: Project development environment — no Docker, no venv
+alwaysApply: true
+---
+
+# Development Environment
+
+This project runs directly on the host machine. **Do not** use Docker or Python virtual environments (venv/virtualenv/conda).
+
+## Starting the Backend
+
+```bash
+cd backend
+uvicorn app.main:app --reload
+```
+
+## Starting the Frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+## Installing Dependencies
+
+- Backend: `pip install -r backend/requirements.txt`
+- Frontend: `npm install` in `frontend/`
+
+## Rules
+
+- Never generate Dockerfiles, docker-compose files, or Docker-related commands
+- Never create or activate virtual environments
+- Assume all Python packages are installed globally (or via system-level pip)
+- Use `uvicorn` directly to run the FastAPI backend
+- Use `npm run dev` (Vite) to run the React frontend

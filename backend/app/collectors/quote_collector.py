@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -13,10 +14,6 @@ from app.models.quote import StockQuote
 
 logger = logging.getLogger(__name__)
 
-PERIOD_MAP = {
-    "day": None,  # resolved at import time below
-}
-
 
 def _get_lb_config():
     s = get_settings()
@@ -29,33 +26,49 @@ def _get_lb_config():
     )
 
 
+def _dec(val) -> Decimal | None:
+    if val is None:
+        return None
+    return Decimal(str(val))
+
+
 class QuoteCollector(BaseCollector):
     name = "quote"
 
     async def collect(self, symbol: str, db: AsyncSession) -> int:
+        t0 = time.monotonic()
         count = 0
+        quote_count = 0
+        candle_count_saved = 0
         try:
             from longbridge.openapi import AdjustType, Period, QuoteContext
 
             config = _get_lb_config()
             ctx = QuoteContext(config)
 
+            logger.info("[quote] fetching real-time quotes for %s ...", symbol)
             quotes = ctx.quote([symbol])
             now = datetime.now(timezone.utc)
             for q in quotes:
+                prev = float(q.prev_close) if q.prev_close else 0
+                last = float(q.last_done) if q.last_done else 0
+                change_rate = ((last - prev) / prev * 100) if prev > 0 else None
+
                 stmt = pg_insert(StockQuote).values(
                     symbol=symbol,
-                    last_price=Decimal(str(q.last_done)),
-                    open=Decimal(str(q.open)),
-                    high=Decimal(str(q.high)),
-                    low=Decimal(str(q.low)),
-                    volume=int(q.volume),
-                    turnover=Decimal(str(q.turnover)),
-                    change_rate=Decimal(str(q.change_rate * 100)) if q.change_rate else None,
+                    last_price=_dec(q.last_done),
+                    open=_dec(q.open),
+                    high=_dec(q.high),
+                    low=_dec(q.low),
+                    volume=int(q.volume) if q.volume else None,
+                    turnover=_dec(q.turnover),
+                    change_rate=Decimal(str(round(change_rate, 4))) if change_rate is not None else None,
+                    market_cap=None,
                     fetched_at=now,
                 )
                 stmt = stmt.on_conflict_do_nothing()
                 await db.execute(stmt)
+                quote_count += 1
                 count += 1
 
             last_row = (
@@ -67,28 +80,43 @@ class QuoteCollector(BaseCollector):
                 )
             ).scalar_one_or_none()
 
-            candle_count = 30 if last_row is None else 10
-            candles = ctx.candlesticks(symbol, Period.Day, candle_count, AdjustType.ForwardAdjust)
+            candle_req = 60 if last_row is None else 10
+            logger.info("[quote] fetching %d candlesticks for %s ...", candle_req, symbol)
+            candles = ctx.candlesticks(symbol, Period.Day, candle_req, AdjustType.ForwardAdjust)
             for c in candles:
-                ts = datetime.fromtimestamp(c.timestamp, tz=timezone.utc) if isinstance(c.timestamp, (int, float)) else c.timestamp
+                ts = c.timestamp
+                if isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts, tz=timezone.utc)
+                elif hasattr(ts, 'tzinfo') and ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+
                 stmt = pg_insert(Candlestick).values(
                     symbol=symbol,
                     period="day",
                     ts=ts,
-                    open=Decimal(str(c.open)),
-                    high=Decimal(str(c.high)),
-                    low=Decimal(str(c.low)),
-                    close=Decimal(str(c.close)),
-                    volume=int(c.volume),
-                    turnover=Decimal(str(c.turnover)) if c.turnover else None,
+                    open=_dec(c.open),
+                    high=_dec(c.high),
+                    low=_dec(c.low),
+                    close=_dec(c.close),
+                    volume=int(c.volume) if c.volume else None,
+                    turnover=_dec(c.turnover),
                 )
                 stmt = stmt.on_conflict_do_nothing()
                 await db.execute(stmt)
+                candle_count_saved += 1
                 count += 1
 
             await db.commit()
-            logger.info("QuoteCollector: fetched %d records for %s", count, symbol)
+            elapsed = time.monotonic() - t0
+            logger.info(
+                "[quote] OK for %s: %d quotes + %d candles = %d total in %.1fs",
+                symbol, quote_count, candle_count_saved, count, elapsed,
+            )
         except Exception:
-            logger.exception("QuoteCollector failed for %s", symbol)
+            elapsed = time.monotonic() - t0
+            logger.exception(
+                "[quote] FAILED for %s after %.1fs (%d records before error)",
+                symbol, elapsed, count,
+            )
             await db.rollback()
         return count

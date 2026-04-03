@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models import Candlestick, StockQuote
 
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
+candlestick_router = APIRouter(tags=["candlesticks"])
 
 
 class StockQuoteOut(BaseModel):
@@ -74,16 +75,18 @@ async def latest_quote(
     return StockQuoteOut.model_validate(row) if row else None
 
 
-@router.get("/candlesticks", response_model=list[CandlestickOut])
+@candlestick_router.get("/api/candlesticks", response_model=list[CandlestickOut])
+@router.get("/candlesticks", response_model=list[CandlestickOut], include_in_schema=False)
 async def list_candlesticks(
     db: AsyncSession = Depends(get_db),
     symbol: str = Query("TSLA.US"),
     period: str = Query("day"),
     limit: int = Query(200, ge=1, le=5000),
 ) -> list[CandlestickOut]:
+    period_lower = period.lower()
     stmt = (
         select(Candlestick)
-        .where(Candlestick.symbol == symbol, Candlestick.period == period)
+        .where(Candlestick.symbol == symbol, Candlestick.period == period_lower)
         .order_by(Candlestick.ts.desc())
         .limit(limit)
     )

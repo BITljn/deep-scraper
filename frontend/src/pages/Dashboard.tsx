@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { CollectButton } from "@/components/CollectButton";
-import { MetricCard } from "@/components/cards/MetricCard";
+import { SpotPanel } from "@/components/cards/SpotPanel";
 import { PriceChart } from "@/components/charts/PriceChart";
 import { SparkLine } from "@/components/SparkLine";
 import { TarcoGauge } from "@/components/charts/TarcoGauge";
 import { VixGauge } from "@/components/charts/VixGauge";
 import { fetchCandlesticks, fetchLatestQuote } from "@/api/quotes";
+import { fetchFundamentals } from "@/api/fundamentals";
 import { fetchLatestVix } from "@/api/vix";
 import type { IndicatorData } from "@/api/types";
 import { useLatestIndicator, useIndicators } from "@/hooks/useIndicators";
@@ -106,13 +107,18 @@ export function Dashboard({ symbol }: DashboardProps) {
     refetchInterval: REFETCH,
   });
 
+  const fundQ = useQuery({
+    queryKey: ["fundamentals", symbol],
+    queryFn: () => fetchFundamentals(symbol),
+    refetchInterval: 300_000,
+    staleTime: 300_000,
+  });
+
   const { data: latestInd } = useLatestIndicator(symbol, "1d");
 
   const indQ = useIndicators(symbol, "1d", 240);
 
   const q = quoteQ.data;
-  const last = q ? toNumber(q.last_price) : 0;
-  const chg = q ? toNumber(q.change_rate) * 100 : 0;
 
   const tarco = latestInd ? toNumber(latestInd.tarco_score) : 0;
   const sig = latestInd?.tarco_signal ?? "NEUTRAL";
@@ -145,16 +151,13 @@ export function Dashboard({ symbol }: DashboardProps) {
           className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
         >
           {quoteQ.isLoading && !q ? (
-            <div className="col-span-full h-36 animate-pulse rounded-xl bg-white/[0.04]" />
+            <div className="col-span-full h-48 animate-pulse rounded-xl bg-white/[0.04]" />
           ) : (
             <>
-              <MetricCard
-                label="TSLA spot"
-                value={last}
-                prefix="$"
-                change={chg}
-                glowColor="cyan"
-                valueClassName="text-3xl md:text-4xl"
+              <SpotPanel
+                quote={q}
+                fundamentals={fundQ.data}
+                loading={quoteQ.isLoading && !q}
               />
               <div className="glass-card glow-cyan relative overflow-hidden p-2">
                 <TarcoGauge value={tarco} signal={sig} />
@@ -166,12 +169,6 @@ export function Dashboard({ symbol }: DashboardProps) {
                   <VixGauge value={vx} regime={vixRegimeLabel(vx)} />
                 )}
               </div>
-              <MetricCard
-                label="Market cap"
-                value={q ? toNumber(q.market_cap) / 1e9 : 0}
-                suffix="B"
-                glowColor="green"
-              />
             </>
           )}
         </motion.section>

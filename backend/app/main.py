@@ -4,8 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routers import backtest, collect, indicators, quotes, sentiment, tweets, vix
+from app.logging_config import setup_logging
+from app.routers import backtest, collect, fundamentals, indicators, quotes, sentiment, tweets, vix
 from app.scheduler import start_scheduler, stop_scheduler
+
+setup_logging()
 
 
 @asynccontextmanager
@@ -33,6 +36,10 @@ app.include_router(vix.router)
 app.include_router(indicators.router)
 app.include_router(backtest.router)
 app.include_router(collect.router)
+app.include_router(fundamentals.router)
+
+
+app.include_router(quotes.candlestick_router)
 
 
 @app.get("/")
