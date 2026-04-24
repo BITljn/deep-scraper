@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { fetchArkOverview } from "@/api/ark";
+import { fetchHhOverview } from "@/api/hh";
 import type { ArkHolding, ArkTrade } from "@/api/types";
 
 const REFRESH_MS = 900_000;
@@ -36,8 +37,8 @@ function formatPercent(value: number | null | undefined): string {
 
 function sideColor(direction: string): string {
   const lower = direction.toLowerCase();
-  if (lower.startsWith("buy")) return "text-[var(--green)]";
-  if (lower.startsWith("sell")) return "text-[var(--red)]";
+  if (lower.startsWith("buy") || lower === "add" || lower === "new") return "text-[var(--green)]";
+  if (lower.startsWith("sell") || lower === "reduce" || lower === "sold") return "text-[var(--red)]";
   return "text-[var(--text-secondary)]";
 }
 
@@ -123,10 +124,10 @@ function TradeRow({ trade }: { trade: ArkTrade }) {
 }
 
 export function HoldingsWatch() {
-  const [profile] = useState("ark");
+  const [profile, setProfile] = useState<"ark" | "hh">("ark");
   const overviewQ = useQuery({
     queryKey: ["holdings-watch", profile],
-    queryFn: fetchArkOverview,
+    queryFn: () => (profile === "ark" ? fetchArkOverview() : fetchHhOverview()),
     refetchInterval: REFRESH_MS,
     staleTime: REFRESH_MS,
   });
@@ -143,7 +144,10 @@ export function HoldingsWatch() {
   const buyRank = useMemo(
     () =>
       trades
-        .filter((trade) => trade.direction.toLowerCase().startsWith("buy"))
+        .filter((trade) => {
+          const direction = trade.direction.toLowerCase();
+          return direction.startsWith("buy") || direction === "add" || direction === "new";
+        })
         .sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))
         .slice(0, 8),
     [trades],
@@ -152,13 +156,17 @@ export function HoldingsWatch() {
   const sellRank = useMemo(
     () =>
       trades
-        .filter((trade) => trade.direction.toLowerCase().startsWith("sell"))
+        .filter((trade) => {
+          const direction = trade.direction.toLowerCase();
+          return direction.startsWith("sell") || direction === "reduce" || direction === "sold";
+        })
         .sort((a, b) => (b.market_value ?? 0) - (a.market_value ?? 0))
         .slice(0, 8),
     [trades],
   );
 
   const maxWeight = holdings[0]?.weight ?? 0;
+  const isQuarterly = profile === "hh";
 
   return (
     <motion.div
@@ -173,21 +181,30 @@ export function HoldingsWatch() {
             Holdings Watch
           </h1>
           <p className="mt-1 font-mono text-xs text-[var(--text-secondary)]">
-            {overview?.manager ?? "Cathie Wood"} · {overview?.vehicle ?? "ARK ETFs Combined"} · 15m refresh
+            {overview?.manager ?? "Cathie Wood"} · {overview?.vehicle ?? "ARK ETFs Combined"} ·{" "}
+            {isQuarterly ? `quarterly 13F${overview?.report_date ? ` · ${overview.report_date}` : ""}` : "15m refresh"}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {["ARK", "Berkshire", "13F Funds", "Custom"].map((item) => (
+          {[
+            { id: "ark", label: "ARK Daily" },
+            { id: "hh", label: "Duan H&H" },
+            { id: "brk", label: "Berkshire" },
+            { id: "custom", label: "Custom" },
+          ].map((item) => (
             <button
-              key={item}
+              key={item.id}
+              onClick={() => {
+                if (item.id === "ark" || item.id === "hh") setProfile(item.id);
+              }}
               className={`rounded-md border px-3 py-2 font-mono text-xs transition-colors ${
-                item === "ARK"
+                item.id === profile
                   ? "border-[var(--cyan)]/50 bg-[var(--cyan)]/10 text-[var(--cyan)]"
                   : "border-white/[0.08] bg-white/[0.03] text-[var(--text-secondary)]"
               }`}
               type="button"
             >
-              {item}
+              {item.label}
             </button>
           ))}
         </div>
@@ -217,19 +234,19 @@ export function HoldingsWatch() {
             <StatTile
               label="Buy flow"
               value={formatMoney(overview.trades.total_buy_value)}
-              sub={`${overview.trades.buy_count} recent trades`}
+              sub={`${overview.trades.buy_count} ${isQuarterly ? "adds/new" : "recent trades"}`}
               tone="text-[var(--green)]"
             />
             <StatTile
               label="Sell flow"
               value={formatMoney(overview.trades.total_sell_value)}
-              sub={`${overview.trades.sell_count} recent trades`}
+              sub={`${overview.trades.sell_count} ${isQuarterly ? "reduces/sold" : "recent trades"}`}
               tone="text-[var(--red)]"
             />
             <StatTile
               label="Net flow"
               value={formatMoney(overview.trades.net_value)}
-              sub={overview.trades.latest_date ?? "-"}
+              sub={isQuarterly ? "value delta est." : overview.trades.latest_date ?? "-"}
               tone="text-[var(--text-primary)]"
             />
             <StatTile
@@ -285,14 +302,14 @@ export function HoldingsWatch() {
                         </span>
                       </div>
                       <div className="font-mono text-[10px] text-[var(--text-secondary)]">
-                        ETF {formatPercent(trade.percent_of_etf)} · Position {formatPercent(trade.percent_of_position)}
+                        {isQuarterly ? "Weight" : "ETF"} {formatPercent(trade.percent_of_etf)} · Position {formatPercent(trade.percent_of_position)}
                       </div>
                     </div>
                     <span className="text-right font-mono text-xs text-[var(--text-primary)]">
                       {trade.market_value_label}
                     </span>
                     <span className="text-right font-mono text-[11px] text-[var(--text-secondary)]">
-                      {formatPercent(trade.current_combined_weight)}
+                  {formatPercent(trade.current_combined_weight)}
                     </span>
                   </div>
                 ))}
@@ -301,7 +318,10 @@ export function HoldingsWatch() {
           </motion.section>
 
           <motion.section variants={block} className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {[["Top buys", buyRank], ["Top sells", sellRank]].map(([title, rows]) => (
+            {[
+              [isQuarterly ? "Top adds/new" : "Top buys", buyRank],
+              [isQuarterly ? "Top reduces/sold" : "Top sells", sellRank],
+            ].map(([title, rows]) => (
               <div key={title as string} className="glass-card p-4">
                 <h2 className="font-heading mb-3 text-xs font-semibold uppercase tracking-[0.25em] text-[var(--text-secondary)]">
                   {title as string}
@@ -348,12 +368,12 @@ export function HoldingsWatch() {
                 <thead className="bg-white/[0.03]">
                   <tr className="font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
                     <th className="px-3 py-2 text-left font-medium">Date</th>
-                    <th className="px-3 py-2 text-left font-medium">Fund</th>
+                    <th className="px-3 py-2 text-left font-medium">{isQuarterly ? "Form" : "Fund"}</th>
                     <th className="px-3 py-2 text-left font-medium">Ticker</th>
-                    <th className="px-3 py-2 text-left font-medium">Side</th>
-                    <th className="px-3 py-2 text-right font-medium">Amount</th>
-                    <th className="px-3 py-2 text-right font-medium">% ETF</th>
-                    <th className="px-3 py-2 text-right font-medium">% Position</th>
+                    <th className="px-3 py-2 text-left font-medium">{isQuarterly ? "Activity" : "Side"}</th>
+                    <th className="px-3 py-2 text-right font-medium">{isQuarterly ? "Value Delta" : "Amount"}</th>
+                    <th className="px-3 py-2 text-right font-medium">{isQuarterly ? "Weight" : "% ETF"}</th>
+                    <th className="px-3 py-2 text-right font-medium">{isQuarterly ? "Share Chg" : "% Position"}</th>
                     <th className="px-3 py-2 text-right font-medium">Now Weight</th>
                   </tr>
                 </thead>

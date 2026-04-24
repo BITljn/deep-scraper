@@ -152,6 +152,10 @@ export interface ArkHolding {
   market_value: number | null;
   market_value_label: string;
   weight: number | null;
+  shares?: number | null;
+  shares_change?: number | null;
+  share_change_pct?: number | null;
+  activity?: string;
 }
 
 export interface ArkTrade {
@@ -194,6 +198,9 @@ export interface ArkOverview {
   vehicle: string;
   source: string;
   fetched_at: number;
+  report_date?: string;
+  previous_report_date?: string | null;
+  filing_date?: string;
   holdings: ArkHoldingsSummary;
   trades: ArkTradesSummary;
 }
