@@ -68,6 +68,26 @@ export interface SentimentScore {
   label: string | null;
 }
 
+export interface SentimentComment {
+  id: number;
+  source_type: string;
+  source_id: string;
+  score: number;
+  label: string;
+  title: string;
+  body: string;
+  author: string | null;
+  published_at: string | null;
+  likes_count: number;
+  comments_count: number;
+  computed_at: string;
+}
+
+export interface SentimentCommentsResponse {
+  total: number;
+  items: SentimentComment[];
+}
+
 export interface IndicatorData {
   id: number;
   symbol: string;
@@ -121,6 +141,61 @@ export interface Fundamentals {
   fifty_two_week_low: number | null;
   beta: number | null;
   dividend_yield: number | null;
+}
+
+export interface ArkHolding {
+  rank: number;
+  ticker: string;
+  company_name: string;
+  price: number | null;
+  price_label: string;
+  market_value: number | null;
+  market_value_label: string;
+  weight: number | null;
+}
+
+export interface ArkTrade {
+  date: string;
+  fund: string;
+  ticker: string;
+  direction: string;
+  market_value: number | null;
+  market_value_label: string;
+  percent_of_position: number | null;
+  percent_of_etf: number | null;
+  current_combined_weight: number | null;
+}
+
+export interface ArkTradesSummary {
+  source: string;
+  source_url: string;
+  fetched_at: number;
+  latest_date: string | null;
+  total_buy_value: number;
+  total_sell_value: number;
+  net_value: number;
+  buy_count: number;
+  sell_count: number;
+  items: ArkTrade[];
+}
+
+export interface ArkHoldingsSummary {
+  source: string;
+  source_url: string;
+  fetched_at: number;
+  total_market_value: number;
+  top_10_weight: number;
+  holdings_count: number;
+  items: ArkHolding[];
+}
+
+export interface ArkOverview {
+  manager: string;
+  vehicle: string;
+  source: string;
+  fetched_at: number;
+  holdings: ArkHoldingsSummary;
+  trades: ArkTradesSummary;
 }
 
 export interface CollectJob {

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 BUCKET_HOURS = {"1h": 1, "4h": 4, "1d": 24}
 WEIGHTS = {"dhi": 0.20, "sps": 0.30, "em": 0.10, "ms": 0.20, "vfs": 0.20}
 
-SENTIMENT_MODEL = "finbert-v1"
+SENTIMENT_MODEL = "snownlp-v1"
 SOURCE_TOPIC = "topic"
 SOURCE_TOPIC_REPLY = "topic_reply"
 SOURCE_TWEET = "tweet"

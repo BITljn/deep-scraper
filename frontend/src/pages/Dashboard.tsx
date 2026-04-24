@@ -117,6 +117,7 @@ export function Dashboard({ symbol }: DashboardProps) {
   const { data: latestInd } = useLatestIndicator(symbol, "1d");
 
   const indQ = useIndicators(symbol, "1d", 240);
+  const indicatorRows = indQ.data as IndicatorData[] | undefined;
 
   const q = quoteQ.data;
 
@@ -127,7 +128,7 @@ export function Dashboard({ symbol }: DashboardProps) {
     ? toNumber(vixLatestQ.data.close ?? vixLatestQ.data.open)
     : 0;
 
-  const loadingStrip = indQ.isLoading && !indQ.data?.length;
+  const loadingStrip = indQ.isLoading && !indicatorRows?.length;
 
   return (
     <div className="relative pb-24">
@@ -203,7 +204,7 @@ export function Dashboard({ symbol }: DashboardProps) {
           </h2>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
             {STRIP.map((s) => {
-              const pts = seriesFor(indQ.data, s.pick);
+              const pts = seriesFor(indicatorRows, s.pick);
               const latest = pts.at(-1);
               return (
                 <motion.div key={s.code} variants={block}>

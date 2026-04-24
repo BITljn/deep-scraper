@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 
 const items: { to: string; label: string; icon: string }[] = [
   { to: "/", label: "Dashboard", icon: "◈" },
+  { to: "/holdings", label: "Holdings", icon: "▤" },
   { to: "/sentiment", label: "Sentiment", icon: "◉" },
   { to: "/musk", label: "Musk", icon: "⚡" },
   { to: "/vix", label: "VIX", icon: "△" },

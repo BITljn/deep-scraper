@@ -1,5 +1,5 @@
 import { client } from "./client";
-import type { SentimentScore, Topic } from "./types";
+import type { SentimentScore, SentimentCommentsResponse, Topic } from "./types";
 
 export interface SentimentSummary {
   sps?: number;
@@ -11,7 +11,7 @@ export async function fetchSentimentScores(
   symbol: string,
   limit = 50,
 ): Promise<SentimentScore[]> {
-  const { data } = await client.get<SentimentScore[]>("/sentiment", {
+  const { data } = await client.get<SentimentScore[]>("/sentiment/scores", {
     params: { symbol, limit },
   });
   return data;
@@ -29,6 +29,21 @@ export async function fetchSentimentSummary(
   } catch {
     return null;
   }
+}
+
+export async function fetchSentimentComments(
+  opts: {
+    source_type?: string;
+    label?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+): Promise<SentimentCommentsResponse> {
+  const { data } = await client.get<SentimentCommentsResponse>(
+    "/sentiment/comments",
+    { params: opts },
+  );
+  return data;
 }
 
 export async function fetchTopics(symbol: string, limit = 30): Promise<Topic[]> {

@@ -19,3 +19,8 @@ frontend/.vite/
 logs/
 .idea/
 .vscode/
+.cursor/
+.codex
+
+# Root lockfile from accidental npm commands; frontend owns its lockfile.
+/package-lock.json

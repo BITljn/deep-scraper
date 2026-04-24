@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
 from app.logging_config import setup_logging
-from app.routers import backtest, collect, fundamentals, indicators, quotes, sentiment, tweets, vix
+from app.routers import ark, backtest, collect, fundamentals, indicators, quotes, sentiment, tweets, vix
 from app.scheduler import start_scheduler, stop_scheduler
 
 setup_logging()
@@ -37,6 +37,7 @@ app.include_router(indicators.router)
 app.include_router(backtest.router)
 app.include_router(collect.router)
 app.include_router(fundamentals.router)
+app.include_router(ark.router)
 
 
 app.include_router(quotes.candlestick_router)
