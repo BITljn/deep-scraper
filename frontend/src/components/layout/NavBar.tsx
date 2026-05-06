@@ -1,3 +1,4 @@
+import { useLayoutEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
 const items: { to: string; label: string; icon: string }[] = [
@@ -5,13 +6,49 @@ const items: { to: string; label: string; icon: string }[] = [
   { to: "/macro", label: "Macro", icon: "◇" },
   { to: "/mega7", label: "Mega 7", icon: "⬡" },
   { to: "/vix", label: "VIX", icon: "△" },
+  { to: "/crs-tax", label: "CRS Tax", icon: "¥" },
 ];
 
+type ThemeMode = "light" | "dark";
+
+const THEME_STORAGE_KEY = "tarco-theme";
+
+function getInitialTheme(): ThemeMode {
+  if (typeof window === "undefined") {
+    return "dark";
+  }
+  let stored: string | null = null;
+  try {
+    stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  } catch {
+    stored = null;
+  }
+  if (stored === "light" || stored === "dark") {
+    return stored;
+  }
+  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
 export function NavBar() {
+  const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
+  const isLight = theme === "light";
+
+  useLayoutEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Theme still applies for the session if storage is unavailable.
+    }
+  }, [theme]);
+
   return (
-    <aside className="group/nav flex h-full w-14 flex-col overflow-hidden border-r border-[var(--border-subtle)] bg-[rgba(8,8,12,0.85)] backdrop-blur-xl transition-[width] duration-300 ease-out hover:w-[200px]">
+    <aside className="group/nav flex h-full w-14 flex-col overflow-hidden border-r border-[var(--border-subtle)] bg-[var(--bg-chrome)] backdrop-blur-xl transition-[width] duration-300 ease-out hover:w-[200px]">
       <div className="flex h-14 shrink-0 items-center px-3">
-        <span className="font-heading text-lg font-bold tracking-tight text-[var(--cyan)] drop-shadow-[0_0_14px_rgba(0,212,255,0.45)] whitespace-nowrap">
+        <span
+          className="font-heading whitespace-nowrap text-lg font-bold tracking-tight text-[var(--cyan)]"
+          style={{ filter: "drop-shadow(var(--brand-shadow))" }}
+        >
           TARCO
         </span>
       </div>
@@ -24,8 +61,8 @@ export function NavBar() {
             className={({ isActive }) =>
               `flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors ${
                 isActive
-                  ? "border-l-2 border-[var(--cyan)] bg-[rgba(0,212,255,0.08)] text-[var(--cyan)] shadow-[inset_0_0_20px_rgba(0,212,255,0.12)]"
-                  : "border-l-2 border-transparent text-[var(--text-secondary)] hover:bg-white/5 hover:text-[var(--text-primary)]"
+                  ? "border-l-2 border-[var(--cyan)] bg-[var(--nav-active-bg)] text-[var(--cyan)] shadow-[var(--nav-active-shadow)]"
+                  : "border-l-2 border-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
               }`
             }
           >
@@ -36,6 +73,22 @@ export function NavBar() {
           </NavLink>
         ))}
       </nav>
+      <div className="border-t border-[var(--border-subtle)] px-2 py-3">
+        <button
+          type="button"
+          className="flex w-full items-center gap-3 rounded-md border-l-2 border-transparent px-2 py-2 text-left text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+          title={isLight ? "Switch to night mode" : "Switch to day mode"}
+          aria-label={isLight ? "Switch to night mode" : "Switch to day mode"}
+          onClick={() => setTheme(isLight ? "dark" : "light")}
+        >
+          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border-subtle)] font-mono text-[11px] text-[var(--cyan)]">
+            {isLight ? "L" : "D"}
+          </span>
+          <span className="whitespace-nowrap opacity-0 transition-opacity duration-200 group-hover/nav:opacity-100">
+            {isLight ? "Day mode" : "Night mode"}
+          </span>
+        </button>
+      </div>
     </aside>
   );
 }

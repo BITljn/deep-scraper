@@ -34,6 +34,7 @@ function Dot({ state }: { state: Freshness }) {
 const SOURCES = [
   { key: "quote", label: "Quotes" },
   { key: "vix", label: "VIX" },
+  { key: "tax", label: "Tax" },
 ] as const;
 
 export function StatusBar() {
@@ -55,7 +56,7 @@ export function StatusBar() {
   });
 
   return (
-    <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-[var(--border-subtle)] bg-[rgba(6,6,10,0.92)] px-4 text-[11px] text-[var(--text-secondary)] backdrop-blur-md">
+    <footer className="flex h-8 shrink-0 items-center gap-6 border-t border-[var(--border-subtle)] bg-[var(--bg-chrome)] px-4 text-[11px] text-[var(--text-secondary)] backdrop-blur-md">
       <span className="font-mono uppercase tracking-wider text-[var(--text-secondary)]">Telemetry</span>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
         {SOURCES.map((s) => {

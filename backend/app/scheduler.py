@@ -32,12 +32,17 @@ async def collect_vix() -> None:
     await _collect_job("vix")
 
 
+async def collect_tax() -> None:
+    await _collect_job("tax")
+
+
 def start_scheduler() -> None:
     settings = get_settings()
 
     _jobs = [
         ("quote", collect_quotes, 5),
         ("vix", collect_vix, 5),
+        ("tax", collect_tax, 24 * 60),
     ]
 
     registered = 0

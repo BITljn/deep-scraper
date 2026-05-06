@@ -1,5 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
+import { CrsTax } from "./pages/CrsTax";
+import { CrsTaxCostTrace } from "./pages/CrsTaxCostTrace";
 import { HoldingsWatch } from "./pages/HoldingsWatch";
 import { MarketCapGdp } from "./pages/MarketCapGdp";
 import { Mega7Pe } from "./pages/Mega7Pe";
@@ -16,6 +18,8 @@ export default function App() {
         <Route path="/macro" element={<MarketCapGdp />} />
         <Route path="/mega7" element={<Mega7Pe />} />
         <Route path="/vix" element={<VixFear symbol={DEFAULT_SYMBOL} />} />
+        <Route path="/crs-tax" element={<CrsTax />} />
+        <Route path="/crs-tax/cost-trace" element={<CrsTaxCostTrace />} />
       </Routes>
     </AppShell>
   );

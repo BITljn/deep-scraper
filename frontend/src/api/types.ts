@@ -156,3 +156,96 @@ export interface CollectJob {
   error_message: string | null;
   created_at: string;
 }
+
+export interface TaxScheme {
+  scheme_key: string;
+  cost_method: string;
+  loss_policy: string;
+  risk_level: string;
+  is_explainable: boolean;
+  capital_proceeds_cny: number | string;
+  capital_cost_cny: number | string;
+  capital_fees_cny: number | string;
+  capital_realized_gain_cny: number | string;
+  capital_taxable_gain_cny: number | string;
+  capital_tax_cny: number | string;
+  sale_count: number;
+  matched_sale_quantity?: number | string;
+  unmatched_sale_quantity?: number | string;
+  unmatched_sale_symbols?: string[];
+  dividend_income_cny: number | string;
+  dividend_tax_cny: number | string;
+  foreign_tax_paid_cny: number | string;
+  foreign_tax_credit_used_cny: number | string;
+  tax_due_cny: number | string;
+  cost_trace?: TaxCostTraceSale[];
+}
+
+export interface TaxCostTraceMatch {
+  buy_time: string;
+  buy_order_id: string;
+  buy_trade_id: string;
+  buy_price: number | string;
+  buy_currency: string;
+  matched_quantity: number | string;
+  unit_cost_cny: number | string;
+  matched_cost_cny: number | string;
+  buy_fee_cny: number | string;
+}
+
+export interface TaxCostTraceSale {
+  index: number;
+  symbol: string;
+  sell_time: string;
+  sell_order_id: string;
+  sell_trade_id: string;
+  sell_price: number | string;
+  currency: string;
+  sell_quantity: number | string;
+  matched_quantity: number | string;
+  unmatched_quantity: number | string;
+  proceeds_cny: number | string;
+  cost_cny: number | string;
+  gain_cny: number | string;
+  matches: TaxCostTraceMatch[];
+}
+
+export interface TaxReport {
+  year: number;
+  filing_month: number;
+  status: "complete" | "incomplete";
+  tax_rate: number | string;
+  tax_fx_rate_date: string;
+  missing_fx_rates: string[];
+  unmatched_cost_lots: Array<{ symbol: string; quantity: number | string }>;
+  best_scheme_key: string | null;
+  best_scheme: TaxScheme | null;
+  schemes: TaxScheme[];
+  dividends: {
+    dividend_income_cny: number | string;
+    dividend_tax_cny: number | string;
+    foreign_tax_paid_cny: number | string;
+    dividend_income_by_country: Record<string, number | string>;
+  };
+  economic_fx: {
+    event_date_cash_value_cny: number | string;
+    filing_basis_cash_value_cny: number | string;
+    observable_fx_effect_cny: number | string;
+    observable_cash_flow_count: number;
+  };
+  raw_counts: {
+    executions: number;
+    cash_flows: number;
+    orders: number;
+  };
+  notes: string[];
+}
+
+export interface TaxRawResponse {
+  kind: string;
+  year?: number | null;
+  limit: number;
+  offset: number;
+  total: number;
+  items: Record<string, unknown>[];
+}

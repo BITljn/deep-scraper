@@ -1,8 +1,16 @@
 @import "tailwindcss";
 
-:root {
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
   --bg-primary: #0a0a0f;
   --bg-surface: rgba(255, 255, 255, 0.03);
+  --bg-chrome: rgba(8, 8, 12, 0.85);
+  --bg-input: #111118;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-overlay: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(0, 212, 255, 0.07), transparent 50%),
+    radial-gradient(ellipse 70% 50% at 100% 50%, rgba(255, 51, 102, 0.04), transparent 45%);
+  --bg-radial: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0, 212, 255, 0.08) 0%, transparent 55%);
   --border-subtle: rgba(255, 255, 255, 0.06);
   --cyan: #00d4ff;
   --green: #00ff88;
@@ -10,15 +18,44 @@
   --amber: #ffaa00;
   --text-primary: #e0e0e6;
   --text-secondary: #6b6b7b;
+  --nav-active-bg: rgba(0, 212, 255, 0.08);
+  --nav-active-shadow: inset 0 0 20px rgba(0, 212, 255, 0.12);
+  --brand-shadow: 0 0 14px rgba(0, 212, 255, 0.45);
+  --scrollbar-track: rgba(255, 255, 255, 0.05);
+  --scrollbar-thumb-start: rgba(0, 212, 255, 0.45);
+  --scrollbar-thumb-end: rgba(0, 212, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(0, 212, 255, 0.55);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-primary: #f5f7fb;
+  --bg-surface: rgba(255, 255, 255, 0.78);
+  --bg-chrome: rgba(255, 255, 255, 0.88);
+  --bg-input: #ffffff;
+  --bg-hover: rgba(14, 27, 50, 0.06);
+  --bg-overlay: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(0, 148, 190, 0.11), transparent 52%),
+    radial-gradient(ellipse 70% 50% at 100% 50%, rgba(245, 138, 57, 0.08), transparent 45%);
+  --bg-radial: radial-gradient(ellipse 120% 80% at 50% -20%, rgba(0, 148, 190, 0.12) 0%, transparent 58%);
+  --border-subtle: rgba(16, 24, 40, 0.12);
+  --cyan: #007a9c;
+  --green: #007d4f;
+  --red: #c9234c;
+  --amber: #a35f00;
+  --text-primary: #151925;
+  --text-secondary: #667085;
+  --nav-active-bg: rgba(0, 122, 156, 0.11);
+  --nav-active-shadow: inset 0 0 18px rgba(0, 122, 156, 0.08);
+  --brand-shadow: 0 0 12px rgba(0, 122, 156, 0.18);
+  --scrollbar-track: rgba(15, 23, 42, 0.07);
+  --scrollbar-thumb-start: rgba(0, 122, 156, 0.42);
+  --scrollbar-thumb-end: rgba(0, 122, 156, 0.18);
+  --scrollbar-thumb-hover: rgba(0, 122, 156, 0.55);
 }
 
 body {
   background: var(--bg-primary);
-  background-image: radial-gradient(
-    ellipse 120% 80% at 50% -20%,
-    rgba(0, 212, 255, 0.08) 0%,
-    transparent 55%
-  );
+  background-image: var(--bg-radial);
   color: var(--text-primary);
   font-family: "Inter", sans-serif;
   margin: 0;
@@ -59,7 +96,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 212, 255, 0.35) rgba(255, 255, 255, 0.05);
+  scrollbar-color: var(--scrollbar-thumb-start) var(--scrollbar-track);
 }
 
 *::-webkit-scrollbar {
@@ -68,15 +105,58 @@ body {
 }
 
 *::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--scrollbar-track);
   border-radius: 4px;
 }
 
 *::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(0, 212, 255, 0.45), rgba(0, 212, 255, 0.2));
+  background: linear-gradient(180deg, var(--scrollbar-thumb-start), var(--scrollbar-thumb-end));
   border-radius: 4px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 212, 255, 0.55);
+  background: var(--scrollbar-thumb-hover);
+}
+
+input,
+select,
+textarea,
+button {
+  color-scheme: inherit;
+}
+
+:root[data-theme="light"] [class~="bg-white/[0.02]"],
+:root[data-theme="light"] [class~="bg-white/[0.025]"],
+:root[data-theme="light"] [class~="bg-white/[0.03]"],
+:root[data-theme="light"] [class~="bg-white/[0.04]"] {
+  background-color: rgba(255, 255, 255, 0.72);
+}
+
+:root[data-theme="light"] [class~="bg-white/[0.05]"] {
+  background-color: rgba(15, 23, 42, 0.08);
+}
+
+:root[data-theme="light"] [class~="bg-[#111118]"] {
+  background-color: var(--bg-input);
+}
+
+:root[data-theme="light"] [class~="border-white/[0.04]"],
+:root[data-theme="light"] [class~="border-white/[0.05]"],
+:root[data-theme="light"] [class~="border-white/[0.06]"],
+:root[data-theme="light"] [class~="border-white/[0.08]"],
+:root[data-theme="light"] [class~="border-white/[0.1]"],
+:root[data-theme="light"] [class~="border-white/[0.12]"] {
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+:root[data-theme="light"] [class~="hover:border-white/[0.16]"]:hover {
+  border-color: rgba(15, 23, 42, 0.22);
+}
+
+:root[data-theme="light"] [class~="hover:bg-white/5"]:hover {
+  background-color: var(--bg-hover);
+}
+
+:root[data-theme="light"] [class~="text-white/20"] {
+  color: rgba(15, 23, 42, 0.25);
 }

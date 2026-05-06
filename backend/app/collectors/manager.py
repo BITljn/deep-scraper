@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.collectors.quote_collector import QuoteCollector
+from app.collectors.tax_collector import TaxCollector
 from app.collectors.vix_collector import VixCollector
 from app.config import get_settings
 from app.database import async_session
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 _ALL_COLLECTORS = {
     QuoteCollector.name: QuoteCollector,
     VixCollector.name: VixCollector,
+    TaxCollector.name: TaxCollector,
 }
 
 

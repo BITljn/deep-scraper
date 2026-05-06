@@ -12,8 +12,7 @@ export function AppShell({ children }: AppShellProps) {
       <div
         className="pointer-events-none fixed inset-0 -z-10"
         style={{
-          background:
-            "radial-gradient(ellipse 90% 60% at 50% -10%, rgba(0,212,255,0.07), transparent 50%), radial-gradient(ellipse 70% 50% at 100% 50%, rgba(255,51,102,0.04), transparent 45%)",
+          background: "var(--bg-overlay)",
         }}
       />
       <div className="flex min-h-0 min-h-screen flex-1">
