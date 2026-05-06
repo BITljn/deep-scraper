@@ -1,5 +1,4 @@
 import { GlassCard } from "./GlassCard";
-import { SparkLine } from "../SparkLine";
 import { useAnimatedNumber } from "@/hooks/useAnimatedNumber";
 import { toNumber } from "@/lib/format";
 
@@ -59,7 +58,23 @@ export function MetricCard({
           )}
         </div>
         {sparkData && sparkData.length > 0 && (
-          <SparkLine data={sparkData} color="var(--cyan)" width={72} height={28} />
+          <svg viewBox="0 0 72 28" className="mt-1 h-7 w-[72px]" preserveAspectRatio="none">
+            <path
+              d={sparkData
+                .map((p, i) => {
+                  const min = Math.min(...sparkData);
+                  const max = Math.max(...sparkData);
+                  const x = (i / Math.max(1, sparkData.length - 1)) * 72;
+                  const y = 26 - ((p - min) / (max - min + 1e-9)) * 24;
+                  return `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
+                })
+                .join(" ")}
+              fill="none"
+              stroke="var(--cyan)"
+              strokeWidth="1.5"
+              vectorEffect="non-scaling-stroke"
+            />
+          </svg>
         )}
       </div>
     </GlassCard>

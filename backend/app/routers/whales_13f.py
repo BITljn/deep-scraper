@@ -1,6 +1,7 @@
 import logging
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -9,38 +10,79 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/hh", tags=["hh"])
+duquesne_router = APIRouter(prefix="/api/duquesne", tags=["duquesne"])
+ackman_router = APIRouter(prefix="/api/ackman", tags=["ackman"])
 
-_CIK = "0001759760"
-_CIK_INT = "1759760"
-_SUBMISSIONS_URL = f"https://data.sec.gov/submissions/CIK{_CIK}.json"
-_ARCHIVE_BASE = f"https://www.sec.gov/Archives/edgar/data/{_CIK_INT}"
 _CACHE_TTL = 3600
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _SEC_HEADERS = {
     "User-Agent": "tarco/1.0 holdings-watch contact@example.com",
     "Accept-Encoding": "gzip, deflate",
 }
-
-_ISSUER_TICKERS = {
-    "ALIBABA GROUP HLDG LTD": "BABA",
-    "ALPHABET INC": "GOOG",
-    "APPLE INC": "AAPL",
-    "ASML HOLDING N V": "ASML",
-    "BERKSHIRE HATHAWAY INC DEL": "BRK.B",
-    "CREDO TECHNOLOGY GROUP HOLDI": "CRDO",
-    "COREWEAVE INC": "CRWV",
-    "DISNEY WALT CO": "DIS",
-    "MICROSOFT CORP": "MSFT",
-    "NVIDIA CORPORATION": "NVDA",
-    "OCCIDENTAL PETE CORP": "OXY",
-    "PDD HOLDINGS INC": "PDD",
-    "TAIWAN SEMICONDUCTOR MFG LTD": "TSM",
-    "TEMPUS AI INC": "TEM",
+_CUSIP_TICKERS = {
+    "02079K107": "GOOG",
+    "02079K305": "GOOGL",
+    "023135106": "AMZN",
+    "037833100": "AAPL",
+    "11271J107": "BN",
+    "169656105": "CMG",
+    "19247G107": "COHR",
+    "22266T109": "CPNG",
+    "43300A203": "HLT",
+    "44267D107": "HHH",
+    "457669307": "INSM",
+    "46137V357": "RSP",
+    "464286400": "EWZ",
+    "632307104": "NTRA",
+    "76131D103": "QSR",
+    "78464A763": "RSP",
+    "81141R100": "SE",
+    "81369Y605": "XLF",
+    "874039100": "TSM",
+    "881624209": "TEVA",
+    "90353T100": "UBER",
+    "92840M102": "VST",
+    "980745103": "WWD",
+    "G2788T103": "CPNG",
 }
 
 
-class HhHoldingOut(BaseModel):
+@dataclass(frozen=True)
+class _ManagerSpec:
+    slug: str
+    manager: str
+    vehicle: str
+    cik: str
+    cik_int: str
+    value_multiplier: float = 1000.0
+
+    @property
+    def submissions_url(self) -> str:
+        return f"https://data.sec.gov/submissions/CIK{self.cik}.json"
+
+    @property
+    def archive_base(self) -> str:
+        return f"https://www.sec.gov/Archives/edgar/data/{self.cik_int}"
+
+
+_DUQUESNE = _ManagerSpec(
+    slug="duquesne",
+    manager="Stanley Druckenmiller",
+    vehicle="Duquesne Family Office 13F Equity Portfolio",
+    cik="0001536411",
+    cik_int="1536411",
+)
+_ACKMAN = _ManagerSpec(
+    slug="ackman",
+    manager="Bill Ackman",
+    vehicle="Pershing Square Capital Management 13F Equity Portfolio",
+    cik="0001336528",
+    cik_int="1336528",
+    value_multiplier=1.0,
+)
+
+
+class HoldingOut(BaseModel):
     rank: int
     ticker: str
     company_name: str
@@ -55,7 +97,7 @@ class HhHoldingOut(BaseModel):
     activity: str
 
 
-class HhChangeOut(BaseModel):
+class ChangeOut(BaseModel):
     date: str
     fund: str
     ticker: str
@@ -68,7 +110,7 @@ class HhChangeOut(BaseModel):
     current_combined_weight: float | None = None
 
 
-class HhChangesSummaryOut(BaseModel):
+class ChangesSummaryOut(BaseModel):
     source: str
     source_url: str
     fetched_at: float
@@ -78,20 +120,20 @@ class HhChangesSummaryOut(BaseModel):
     net_value: float
     buy_count: int
     sell_count: int
-    items: list[HhChangeOut]
+    items: list[ChangeOut]
 
 
-class HhHoldingsSummaryOut(BaseModel):
+class HoldingsSummaryOut(BaseModel):
     source: str
     source_url: str
     fetched_at: float
     total_market_value: float
     top_10_weight: float
     holdings_count: int
-    items: list[HhHoldingOut]
+    items: list[HoldingOut]
 
 
-class HhOverviewOut(BaseModel):
+class OverviewOut(BaseModel):
     manager: str
     vehicle: str
     source: str
@@ -99,8 +141,8 @@ class HhOverviewOut(BaseModel):
     report_date: str
     previous_report_date: str | None
     filing_date: str
-    holdings: HhHoldingsSummaryOut
-    trades: HhChangesSummaryOut
+    holdings: HoldingsSummaryOut
+    trades: ChangesSummaryOut
 
 
 class _Filing(BaseModel):
@@ -148,8 +190,7 @@ async def _get_text(url: str) -> str:
 
 def _recent_13f_filings(submissions: dict[str, Any]) -> list[_Filing]:
     recent = submissions["filings"]["recent"]
-    filings: list[_Filing] = []
-    seen_reports: set[str] = set()
+    filings_by_report: dict[str, _Filing] = {}
     for accession, report_date, filing_date, form in zip(
         recent["accessionNumber"],
         recent["reportDate"],
@@ -157,20 +198,15 @@ def _recent_13f_filings(submissions: dict[str, Any]) -> list[_Filing]:
         recent["form"],
         strict=False,
     ):
-        if form not in {"13F-HR", "13F-HR/A"} or report_date in seen_reports:
+        if form not in {"13F-HR", "13F-HR/A"} or report_date in filings_by_report:
             continue
-        seen_reports.add(report_date)
-        filings.append(
-            _Filing(
-                accession=accession,
-                report_date=report_date,
-                filing_date=filing_date,
-                form=form,
-            )
+        filings_by_report[report_date] = _Filing(
+            accession=accession,
+            report_date=report_date,
+            filing_date=filing_date,
+            form=form,
         )
-        if len(filings) >= 2:
-            break
-    return filings
+    return sorted(filings_by_report.values(), key=lambda filing: filing.report_date, reverse=True)[:2]
 
 
 def _text(node: ET.Element, name: str) -> str:
@@ -185,48 +221,80 @@ def _parse_float(value: str) -> float:
         return 0.0
 
 
-def _ticker_for_issuer(issuer: str) -> str:
-    normalized = " ".join(issuer.upper().split())
-    return _ISSUER_TICKERS.get(normalized, normalized[:10])
+def _ticker_for_holding(cusip: str, issuer: str) -> str:
+    if cusip in _CUSIP_TICKERS:
+        return _CUSIP_TICKERS[cusip]
+    return " ".join(issuer.upper().split())[:10]
 
 
-async def _fetch_infotable(filing: _Filing) -> list[_SecHolding]:
+async def _infotable_url(spec: _ManagerSpec, filing: _Filing) -> str:
     accession_path = filing.accession.replace("-", "")
-    url = f"{_ARCHIVE_BASE}/{accession_path}/infotable.xml"
-    xml = await _get_text(url)
+    base_url = f"{spec.archive_base}/{accession_path}"
+    try:
+        index = await _get_json(f"{base_url}/index.json")
+    except httpx.HTTPError:
+        return f"{base_url}/infotable.xml"
+
+    items = index.get("directory", {}).get("item", [])
+    xml_items = [
+        item
+        for item in items
+        if str(item.get("name", "")).lower().endswith(".xml")
+        and str(item.get("name", "")).lower() != "primary_doc.xml"
+    ]
+    if not xml_items:
+        return f"{base_url}/infotable.xml"
+
+    def size(item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    largest_xml = max(xml_items, key=size)
+    return f"{base_url}/{largest_xml['name']}"
+
+
+async def _fetch_infotable(spec: _ManagerSpec, filing: _Filing) -> list[_SecHolding]:
+    xml = await _get_text(await _infotable_url(spec, filing))
     root = ET.fromstring(xml)
-    holdings: list[_SecHolding] = []
+    grouped: dict[str, _SecHolding] = {}
+
     for info in root.findall(".//{*}infoTable"):
         issuer = _text(info, "nameOfIssuer")
-        cusip = _text(info, "cusip")
-        value = _parse_float(_text(info, "value"))
+        cusip = _text(info, "cusip").upper()
+        value = _parse_float(_text(info, "value")) * spec.value_multiplier
         shares = _parse_float(_text(info, "sshPrnamt"))
-        holdings.append(
-            _SecHolding(
-                issuer=issuer,
-                cusip=cusip,
-                ticker=_ticker_for_issuer(issuer),
-                value=value,
-                shares=shares,
-            )
+        existing = grouped.get(cusip)
+        if existing:
+            existing.value += value
+            existing.shares += shares
+            continue
+        grouped[cusip] = _SecHolding(
+            issuer=issuer,
+            cusip=cusip,
+            ticker=_ticker_for_holding(cusip, issuer),
+            value=value,
+            shares=shares,
         )
-    return holdings
+
+    return list(grouped.values())
 
 
-async def _load_overview_data() -> dict[str, Any]:
+async def _load_overview_data(spec: _ManagerSpec) -> dict[str, Any]:
     now = time.time()
-    cached = _cache.get("overview")
+    cached = _cache.get(spec.slug)
     if cached and now - cached[0] < _CACHE_TTL:
         return cached[1]
 
-    submissions = await _get_json(_SUBMISSIONS_URL)
+    submissions = await _get_json(spec.submissions_url)
     filings = _recent_13f_filings(submissions)
     if len(filings) < 2:
-        raise ValueError("Not enough H&H 13F filings found")
+        raise ValueError(f"Not enough {spec.manager} 13F filings found")
 
     latest, previous = filings[0], filings[1]
-    latest_holdings = await _fetch_infotable(latest)
-    previous_holdings = await _fetch_infotable(previous)
+    latest_holdings = await _fetch_infotable(spec, latest)
+    previous_holdings = await _fetch_infotable(spec, previous)
     data = {
         "latest": latest,
         "previous": previous,
@@ -234,11 +302,16 @@ async def _load_overview_data() -> dict[str, Any]:
         "previous_holdings": previous_holdings,
         "fetched_at": now,
     }
-    _cache["overview"] = (now, data)
+    _cache[spec.slug] = (now, data)
     return data
 
 
-def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: int) -> HhOverviewOut:
+def _build_overview(
+    spec: _ManagerSpec,
+    data: dict[str, Any],
+    holdings_limit: int,
+    changes_limit: int,
+) -> OverviewOut:
     latest: _Filing = data["latest"]
     previous: _Filing = data["previous"]
     latest_holdings: list[_SecHolding] = data["latest_holdings"]
@@ -248,16 +321,13 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
     prev_by_cusip = {holding.cusip: holding for holding in previous_holdings}
     latest_by_cusip = {holding.cusip: holding for holding in latest_holdings}
     total_value = sum(holding.value for holding in latest_holdings)
-
     ranked = sorted(latest_holdings, key=lambda item: item.value, reverse=True)
-    holdings: list[HhHoldingOut] = []
-    changes: list[HhChangeOut] = []
+    holdings: list[HoldingOut] = []
+    changes: list[ChangeOut] = []
 
     for rank, holding in enumerate(ranked, start=1):
         previous_holding = prev_by_cusip.get(holding.cusip)
-        shares_change = (
-            holding.shares - previous_holding.shares if previous_holding else holding.shares
-        )
+        shares_change = holding.shares - previous_holding.shares if previous_holding else holding.shares
         share_change_pct = (
             shares_change / previous_holding.shares * 100
             if previous_holding and previous_holding.shares
@@ -275,7 +345,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
         value_change = holding.value - (previous_holding.value if previous_holding else 0)
 
         holdings.append(
-            HhHoldingOut(
+            HoldingOut(
                 rank=rank,
                 ticker=holding.ticker,
                 company_name=holding.issuer,
@@ -293,7 +363,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
 
         if activity != "NO_CHANGE":
             changes.append(
-                HhChangeOut(
+                ChangeOut(
                     date=latest.report_date,
                     fund="13F",
                     ticker=holding.ticker,
@@ -311,7 +381,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
         if previous_holding.cusip in latest_by_cusip:
             continue
         changes.append(
-            HhChangeOut(
+            ChangeOut(
                 date=latest.report_date,
                 fund="13F",
                 ticker=previous_holding.ticker,
@@ -327,27 +397,23 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
 
     changes.sort(key=lambda item: item.market_value or 0, reverse=True)
     items = changes[:changes_limit]
-    add_value = sum(
-        item.market_value or 0
-        for item in items
-        if item.direction in {"NEW", "ADD"}
-    )
+    add_value = sum(item.market_value or 0 for item in items if item.direction in {"NEW", "ADD"})
     reduce_value = sum(
         item.market_value or 0
         for item in items
         if item.direction in {"REDUCE", "SOLD"}
     )
-    source_url = f"{_ARCHIVE_BASE}/{latest.accession.replace('-', '')}/"
+    source_url = f"{spec.archive_base}/{latest.accession.replace('-', '')}/"
 
-    return HhOverviewOut(
-        manager="Duan Yongping",
-        vehicle="H&H International Investment 13F",
+    return OverviewOut(
+        manager=spec.manager,
+        vehicle=spec.vehicle,
         source="SEC EDGAR",
         fetched_at=fetched_at,
         report_date=latest.report_date,
         previous_report_date=previous.report_date,
         filing_date=latest.filing_date,
-        holdings=HhHoldingsSummaryOut(
+        holdings=HoldingsSummaryOut(
             source="SEC EDGAR",
             source_url=source_url,
             fetched_at=fetched_at,
@@ -356,7 +422,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
             holdings_count=len(holdings),
             items=holdings[:holdings_limit],
         ),
-        trades=HhChangesSummaryOut(
+        trades=ChangesSummaryOut(
             source="SEC EDGAR 13F",
             source_url=source_url,
             fetched_at=fetched_at,
@@ -371,14 +437,30 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
     )
 
 
-@router.get("/overview", response_model=HhOverviewOut)
-async def get_hh_overview(
+async def _get_overview(
+    spec: _ManagerSpec,
+    holdings_limit: int,
+    changes_limit: int,
+) -> OverviewOut:
+    try:
+        data = await _load_overview_data(spec)
+    except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
+        logger.exception("Failed to fetch %s 13F overview", spec.manager)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _build_overview(spec, data, holdings_limit, changes_limit)
+
+
+@duquesne_router.get("/overview", response_model=OverviewOut)
+async def get_duquesne_overview(
     holdings_limit: int = Query(100, ge=1, le=200),
     changes_limit: int = Query(100, ge=1, le=200),
-) -> HhOverviewOut:
-    try:
-        data = await _load_overview_data()
-    except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
-        logger.exception("Failed to fetch H&H 13F overview")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return _build_overview(data, holdings_limit, changes_limit)
+) -> OverviewOut:
+    return await _get_overview(_DUQUESNE, holdings_limit, changes_limit)
+
+
+@ackman_router.get("/overview", response_model=OverviewOut)
+async def get_ackman_overview(
+    holdings_limit: int = Query(100, ge=1, le=200),
+    changes_limit: int = Query(100, ge=1, le=200),
+) -> OverviewOut:
+    return await _get_overview(_ACKMAN, holdings_limit, changes_limit)

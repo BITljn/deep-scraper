@@ -1,12 +1,10 @@
 import { NavLink } from "react-router-dom";
 
 const items: { to: string; label: string; icon: string }[] = [
-  { to: "/", label: "Dashboard", icon: "◈" },
-  { to: "/holdings", label: "Holdings", icon: "▤" },
-  { to: "/sentiment", label: "Sentiment", icon: "◉" },
-  { to: "/musk", label: "Musk", icon: "⚡" },
+  { to: "/", label: "Holdings", icon: "▤" },
+  { to: "/macro", label: "Macro", icon: "◇" },
+  { to: "/mega7", label: "Mega 7", icon: "⬡" },
   { to: "/vix", label: "VIX", icon: "△" },
-  { to: "/backtest", label: "Backtest", icon: "◧" },
 ];
 
 export function NavBar() {

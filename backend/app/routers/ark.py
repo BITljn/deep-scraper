@@ -32,6 +32,7 @@ class ArkTradeOut(BaseModel):
     date: str
     fund: str
     ticker: str
+    company_name: str | None = None
     direction: str
     market_value: float | None = None
     market_value_label: str
@@ -181,6 +182,7 @@ def _trade_from_row(
         date=date,
         fund=fund,
         ticker=ticker,
+        company_name=holding.company_name if holding else None,
         direction=direction,
         market_value=_parse_money(market_value),
         market_value_label=market_value,

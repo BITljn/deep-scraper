@@ -52,7 +52,7 @@ async def _run_in_background(job_type: str, symbol: str) -> None:
 @router.post("/", response_model=CollectCreateResponse)
 async def create_collect_job(body: CollectBody) -> CollectCreateResponse:
     if body.job_type == "all":
-        for jt in ["quote", "topic", "tweet", "vix"]:
+        for jt in ["quote", "vix"]:
             asyncio.create_task(_run_in_background(jt, body.symbol))
     else:
         asyncio.create_task(_run_in_background(body.job_type, body.symbol))

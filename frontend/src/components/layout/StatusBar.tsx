@@ -33,8 +33,6 @@ function Dot({ state }: { state: Freshness }) {
 
 const SOURCES = [
   { key: "quote", label: "Quotes" },
-  { key: "topic", label: "Topics" },
-  { key: "tweet", label: "Tweets" },
   { key: "vix", label: "VIX" },
 ] as const;
 

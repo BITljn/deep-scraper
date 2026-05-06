@@ -7,8 +7,6 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.collectors.quote_collector import QuoteCollector
-from app.collectors.topic_collector import TopicCollector
-from app.collectors.tweet_collector import TweetCollector
 from app.collectors.vix_collector import VixCollector
 from app.config import get_settings
 from app.database import async_session
@@ -18,14 +16,12 @@ logger = logging.getLogger(__name__)
 
 _ALL_COLLECTORS = {
     QuoteCollector.name: QuoteCollector,
-    TopicCollector.name: TopicCollector,
-    TweetCollector.name: TweetCollector,
     VixCollector.name: VixCollector,
 }
 
 
 class CollectorManager:
-    """Orchestrates quote, topic, tweet, and VIX collectors."""
+    """Orchestrates quote and VIX collectors."""
 
     def __init__(self) -> None:
         settings = get_settings()

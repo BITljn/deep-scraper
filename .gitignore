@@ -9,6 +9,7 @@ env/
 .env
 *.db
 *.sqlite3
+backend/.cache/
 
 node_modules/
 frontend/dist/

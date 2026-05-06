@@ -9,10 +9,10 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/hh", tags=["hh"])
+router = APIRouter(prefix="/api/brk", tags=["brk"])
 
-_CIK = "0001759760"
-_CIK_INT = "1759760"
+_CIK = "0001067983"
+_CIK_INT = "1067983"
 _SUBMISSIONS_URL = f"https://data.sec.gov/submissions/CIK{_CIK}.json"
 _ARCHIVE_BASE = f"https://www.sec.gov/Archives/edgar/data/{_CIK_INT}"
 _CACHE_TTL = 3600
@@ -22,25 +22,56 @@ _SEC_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
-_ISSUER_TICKERS = {
-    "ALIBABA GROUP HLDG LTD": "BABA",
-    "ALPHABET INC": "GOOG",
-    "APPLE INC": "AAPL",
-    "ASML HOLDING N V": "ASML",
-    "BERKSHIRE HATHAWAY INC DEL": "BRK.B",
-    "CREDO TECHNOLOGY GROUP HOLDI": "CRDO",
-    "COREWEAVE INC": "CRWV",
-    "DISNEY WALT CO": "DIS",
-    "MICROSOFT CORP": "MSFT",
-    "NVIDIA CORPORATION": "NVDA",
-    "OCCIDENTAL PETE CORP": "OXY",
-    "PDD HOLDINGS INC": "PDD",
-    "TAIWAN SEMICONDUCTOR MFG LTD": "TSM",
-    "TEMPUS AI INC": "TEM",
+_CUSIP_TICKERS = {
+    "02005N100": "ALLY",
+    "02079K305": "GOOGL",
+    "023135106": "AMZN",
+    "025816109": "AXP",
+    "037833100": "AAPL",
+    "047726302": "BATRA",
+    "060505104": "BAC",
+    "14040H105": "COF",
+    "16119P108": "CHTR",
+    "166764100": "CVX",
+    "191216100": "KO",
+    "21036P108": "STZ",
+    "23918K108": "DVA",
+    "25243Q205": "DEO",
+    "25754A201": "DPZ",
+    "422806208": "HEI.A",
+    "47233W109": "JEF",
+    "500754106": "KHC",
+    "501044101": "KR",
+    "512816109": "LAMR",
+    "526057104": "LEN",
+    "526057302": "LEN.B",
+    "530909100": "LLYVA",
+    "530909308": "LLYVK",
+    "531229722": "LLYVK",
+    "531229748": "LLYVA",
+    "531229755": "FWONK",
+    "531229854": "FWONK",
+    "546347105": "LPX",
+    "57636Q104": "MA",
+    "615369105": "MCO",
+    "62944T105": "NVR",
+    "650111107": "NYT",
+    "670346105": "NUE",
+    "674599105": "OXY",
+    "73278L105": "POOL",
+    "829933100": "SIRI",
+    "91324P102": "UNH",
+    "92343E102": "VRSN",
+    "92826C839": "V",
+    "G0176J109": "ALLE",
+    "G0403H108": "AON",
+    "G9001E102": "LILA",
+    "G9001E128": "LILAK",
+    "H1467J104": "CB",
 }
 
 
-class HhHoldingOut(BaseModel):
+class BrkHoldingOut(BaseModel):
     rank: int
     ticker: str
     company_name: str
@@ -55,7 +86,7 @@ class HhHoldingOut(BaseModel):
     activity: str
 
 
-class HhChangeOut(BaseModel):
+class BrkChangeOut(BaseModel):
     date: str
     fund: str
     ticker: str
@@ -68,7 +99,7 @@ class HhChangeOut(BaseModel):
     current_combined_weight: float | None = None
 
 
-class HhChangesSummaryOut(BaseModel):
+class BrkChangesSummaryOut(BaseModel):
     source: str
     source_url: str
     fetched_at: float
@@ -78,20 +109,20 @@ class HhChangesSummaryOut(BaseModel):
     net_value: float
     buy_count: int
     sell_count: int
-    items: list[HhChangeOut]
+    items: list[BrkChangeOut]
 
 
-class HhHoldingsSummaryOut(BaseModel):
+class BrkHoldingsSummaryOut(BaseModel):
     source: str
     source_url: str
     fetched_at: float
     total_market_value: float
     top_10_weight: float
     holdings_count: int
-    items: list[HhHoldingOut]
+    items: list[BrkHoldingOut]
 
 
-class HhOverviewOut(BaseModel):
+class BrkOverviewOut(BaseModel):
     manager: str
     vehicle: str
     source: str
@@ -99,8 +130,8 @@ class HhOverviewOut(BaseModel):
     report_date: str
     previous_report_date: str | None
     filing_date: str
-    holdings: HhHoldingsSummaryOut
-    trades: HhChangesSummaryOut
+    holdings: BrkHoldingsSummaryOut
+    trades: BrkChangesSummaryOut
 
 
 class _Filing(BaseModel):
@@ -148,8 +179,7 @@ async def _get_text(url: str) -> str:
 
 def _recent_13f_filings(submissions: dict[str, Any]) -> list[_Filing]:
     recent = submissions["filings"]["recent"]
-    filings: list[_Filing] = []
-    seen_reports: set[str] = set()
+    filings_by_report: dict[str, _Filing] = {}
     for accession, report_date, filing_date, form in zip(
         recent["accessionNumber"],
         recent["reportDate"],
@@ -157,10 +187,9 @@ def _recent_13f_filings(submissions: dict[str, Any]) -> list[_Filing]:
         recent["form"],
         strict=False,
     ):
-        if form not in {"13F-HR", "13F-HR/A"} or report_date in seen_reports:
+        if form not in {"13F-HR", "13F-HR/A"} or report_date in filings_by_report:
             continue
-        seen_reports.add(report_date)
-        filings.append(
+        filings_by_report[report_date] = (
             _Filing(
                 accession=accession,
                 report_date=report_date,
@@ -168,9 +197,7 @@ def _recent_13f_filings(submissions: dict[str, Any]) -> list[_Filing]:
                 form=form,
             )
         )
-        if len(filings) >= 2:
-            break
-    return filings
+    return sorted(filings_by_report.values(), key=lambda filing: filing.report_date, reverse=True)[:2]
 
 
 def _text(node: ET.Element, name: str) -> str:
@@ -185,32 +212,64 @@ def _parse_float(value: str) -> float:
         return 0.0
 
 
-def _ticker_for_issuer(issuer: str) -> str:
-    normalized = " ".join(issuer.upper().split())
-    return _ISSUER_TICKERS.get(normalized, normalized[:10])
+def _ticker_for_holding(cusip: str, issuer: str) -> str:
+    if cusip in _CUSIP_TICKERS:
+        return _CUSIP_TICKERS[cusip]
+    return " ".join(issuer.upper().split())[:10]
+
+
+async def _infotable_url(filing: _Filing) -> str:
+    accession_path = filing.accession.replace("-", "")
+    base_url = f"{_ARCHIVE_BASE}/{accession_path}"
+    try:
+        index = await _get_json(f"{base_url}/index.json")
+    except httpx.HTTPError:
+        return f"{base_url}/infotable.xml"
+
+    items = index.get("directory", {}).get("item", [])
+    xml_items = [
+        item
+        for item in items
+        if str(item.get("name", "")).lower().endswith(".xml")
+        and str(item.get("name", "")).lower() != "primary_doc.xml"
+    ]
+    if not xml_items:
+        return f"{base_url}/infotable.xml"
+
+    def size(item: dict[str, Any]) -> int:
+        try:
+            return int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    largest_xml = max(xml_items, key=size)
+    return f"{base_url}/{largest_xml['name']}"
 
 
 async def _fetch_infotable(filing: _Filing) -> list[_SecHolding]:
-    accession_path = filing.accession.replace("-", "")
-    url = f"{_ARCHIVE_BASE}/{accession_path}/infotable.xml"
-    xml = await _get_text(url)
+    xml = await _get_text(await _infotable_url(filing))
     root = ET.fromstring(xml)
-    holdings: list[_SecHolding] = []
+    grouped: dict[str, _SecHolding] = {}
+
     for info in root.findall(".//{*}infoTable"):
         issuer = _text(info, "nameOfIssuer")
-        cusip = _text(info, "cusip")
+        cusip = _text(info, "cusip").upper()
         value = _parse_float(_text(info, "value"))
         shares = _parse_float(_text(info, "sshPrnamt"))
-        holdings.append(
-            _SecHolding(
-                issuer=issuer,
-                cusip=cusip,
-                ticker=_ticker_for_issuer(issuer),
-                value=value,
-                shares=shares,
-            )
+        existing = grouped.get(cusip)
+        if existing:
+            existing.value += value
+            existing.shares += shares
+            continue
+        grouped[cusip] = _SecHolding(
+            issuer=issuer,
+            cusip=cusip,
+            ticker=_ticker_for_holding(cusip, issuer),
+            value=value,
+            shares=shares,
         )
-    return holdings
+
+    return list(grouped.values())
 
 
 async def _load_overview_data() -> dict[str, Any]:
@@ -222,7 +281,7 @@ async def _load_overview_data() -> dict[str, Any]:
     submissions = await _get_json(_SUBMISSIONS_URL)
     filings = _recent_13f_filings(submissions)
     if len(filings) < 2:
-        raise ValueError("Not enough H&H 13F filings found")
+        raise ValueError("Not enough Berkshire 13F filings found")
 
     latest, previous = filings[0], filings[1]
     latest_holdings = await _fetch_infotable(latest)
@@ -238,7 +297,7 @@ async def _load_overview_data() -> dict[str, Any]:
     return data
 
 
-def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: int) -> HhOverviewOut:
+def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: int) -> BrkOverviewOut:
     latest: _Filing = data["latest"]
     previous: _Filing = data["previous"]
     latest_holdings: list[_SecHolding] = data["latest_holdings"]
@@ -250,8 +309,8 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
     total_value = sum(holding.value for holding in latest_holdings)
 
     ranked = sorted(latest_holdings, key=lambda item: item.value, reverse=True)
-    holdings: list[HhHoldingOut] = []
-    changes: list[HhChangeOut] = []
+    holdings: list[BrkHoldingOut] = []
+    changes: list[BrkChangeOut] = []
 
     for rank, holding in enumerate(ranked, start=1):
         previous_holding = prev_by_cusip.get(holding.cusip)
@@ -275,7 +334,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
         value_change = holding.value - (previous_holding.value if previous_holding else 0)
 
         holdings.append(
-            HhHoldingOut(
+            BrkHoldingOut(
                 rank=rank,
                 ticker=holding.ticker,
                 company_name=holding.issuer,
@@ -293,7 +352,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
 
         if activity != "NO_CHANGE":
             changes.append(
-                HhChangeOut(
+                BrkChangeOut(
                     date=latest.report_date,
                     fund="13F",
                     ticker=holding.ticker,
@@ -311,7 +370,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
         if previous_holding.cusip in latest_by_cusip:
             continue
         changes.append(
-            HhChangeOut(
+            BrkChangeOut(
                 date=latest.report_date,
                 fund="13F",
                 ticker=previous_holding.ticker,
@@ -339,15 +398,15 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
     )
     source_url = f"{_ARCHIVE_BASE}/{latest.accession.replace('-', '')}/"
 
-    return HhOverviewOut(
-        manager="Duan Yongping",
-        vehicle="H&H International Investment 13F",
+    return BrkOverviewOut(
+        manager="Berkshire Hathaway",
+        vehicle="Berkshire Hathaway 13F Equity Portfolio",
         source="SEC EDGAR",
         fetched_at=fetched_at,
         report_date=latest.report_date,
         previous_report_date=previous.report_date,
         filing_date=latest.filing_date,
-        holdings=HhHoldingsSummaryOut(
+        holdings=BrkHoldingsSummaryOut(
             source="SEC EDGAR",
             source_url=source_url,
             fetched_at=fetched_at,
@@ -356,7 +415,7 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
             holdings_count=len(holdings),
             items=holdings[:holdings_limit],
         ),
-        trades=HhChangesSummaryOut(
+        trades=BrkChangesSummaryOut(
             source="SEC EDGAR 13F",
             source_url=source_url,
             fetched_at=fetched_at,
@@ -371,14 +430,14 @@ def _build_overview(data: dict[str, Any], holdings_limit: int, changes_limit: in
     )
 
 
-@router.get("/overview", response_model=HhOverviewOut)
-async def get_hh_overview(
+@router.get("/overview", response_model=BrkOverviewOut)
+async def get_brk_overview(
     holdings_limit: int = Query(100, ge=1, le=200),
     changes_limit: int = Query(100, ge=1, le=200),
-) -> HhOverviewOut:
+) -> BrkOverviewOut:
     try:
         data = await _load_overview_data()
     except (httpx.HTTPError, ET.ParseError, ValueError) as exc:
-        logger.exception("Failed to fetch H&H 13F overview")
+        logger.exception("Failed to fetch Berkshire 13F overview")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _build_overview(data, holdings_limit, changes_limit)

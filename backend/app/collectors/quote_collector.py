@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.collectors.base import BaseCollector
 from app.config import get_settings
 from app.models.candlestick import Candlestick
-from app.models.quote import StockQuote
 
 logger = logging.getLogger(__name__)
 
@@ -38,38 +37,12 @@ class QuoteCollector(BaseCollector):
     async def collect(self, symbol: str, db: AsyncSession) -> int:
         t0 = time.monotonic()
         count = 0
-        quote_count = 0
         candle_count_saved = 0
         try:
             from longbridge.openapi import AdjustType, Period, QuoteContext
 
             config = _get_lb_config()
             ctx = QuoteContext(config)
-
-            logger.info("[quote] fetching real-time quotes for %s ...", symbol)
-            quotes = ctx.quote([symbol])
-            now = datetime.now(timezone.utc)
-            for q in quotes:
-                prev = float(q.prev_close) if q.prev_close else 0
-                last = float(q.last_done) if q.last_done else 0
-                change_rate = ((last - prev) / prev * 100) if prev > 0 else None
-
-                stmt = pg_insert(StockQuote).values(
-                    symbol=symbol,
-                    last_price=_dec(q.last_done),
-                    open=_dec(q.open),
-                    high=_dec(q.high),
-                    low=_dec(q.low),
-                    volume=int(q.volume) if q.volume else None,
-                    turnover=_dec(q.turnover),
-                    change_rate=Decimal(str(round(change_rate, 4))) if change_rate is not None else None,
-                    market_cap=None,
-                    fetched_at=now,
-                )
-                stmt = stmt.on_conflict_do_nothing()
-                await db.execute(stmt)
-                quote_count += 1
-                count += 1
 
             last_row = (
                 await db.execute(
@@ -109,8 +82,8 @@ class QuoteCollector(BaseCollector):
             await db.commit()
             elapsed = time.monotonic() - t0
             logger.info(
-                "[quote] OK for %s: %d quotes + %d candles = %d total in %.1fs",
-                symbol, quote_count, candle_count_saved, count, elapsed,
+                "[quote] OK for %s: %d candles in %.1fs",
+                symbol, candle_count_saved, elapsed,
             )
         except Exception:
             elapsed = time.monotonic() - t0
