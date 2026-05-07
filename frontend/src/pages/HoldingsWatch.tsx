@@ -7,7 +7,8 @@ import { fetchBerkshireOverview } from "@/api/brk";
 import { fetchDuquesneOverview } from "@/api/duquesne";
 import { fetchHhOverview } from "@/api/hh";
 import { fetchPelosiOverview } from "@/api/pelosi";
-import type { ArkHolding, ArkTrade } from "@/api/types";
+import { HoldingsDistributionChart } from "@/components/charts/HoldingsDistributionChart";
+import type { ArkTrade } from "@/api/types";
 
 const REFRESH_MS = 900_000;
 type Profile = "brk" | "ark" | "hh" | "pelosi" | "duquesne" | "ackman";
@@ -86,34 +87,6 @@ function StatTile({
       <div className="mt-1 font-mono text-[10px] text-[var(--text-secondary)]">
         {sub}
       </div>
-    </div>
-  );
-}
-
-function HoldingBar({ holding, maxWeight }: { holding: ArkHolding; maxWeight: number }) {
-  const width = maxWeight > 0 && holding.weight ? (holding.weight / maxWeight) * 100 : 0;
-  return (
-    <div className="grid grid-cols-[52px_1fr_76px] items-center gap-3 border-b border-white/[0.04] py-2 last:border-0">
-      <span className="font-mono text-xs text-[var(--text-primary)]">{holding.ticker}</span>
-      <div className="min-w-0">
-        <div className="mb-1 flex items-center justify-between gap-3">
-          <span className="truncate text-xs text-[var(--text-secondary)]">
-            {holding.company_name}
-          </span>
-          <span className="font-mono text-[11px] text-[var(--text-primary)]">
-            {formatPercent(holding.weight)}
-          </span>
-        </div>
-        <div className="h-2 overflow-hidden rounded bg-white/[0.05]">
-          <div
-            className="h-full rounded bg-[var(--cyan)]/75"
-            style={{ width: `${Math.max(width, 2)}%` }}
-          />
-        </div>
-      </div>
-      <span className="text-right font-mono text-xs text-[var(--text-primary)]">
-        {holding.market_value_label}
-      </span>
     </div>
   );
 }
@@ -216,7 +189,6 @@ export function HoldingsWatch() {
     [trades],
   );
 
-  const maxWeight = holdings[0]?.weight ?? 0;
   const isQuarterly = profileConfig.mode === "quarterly";
   const isAllocation = profileConfig.mode === "allocation";
   const distributionDate =
@@ -312,22 +284,12 @@ export function HoldingsWatch() {
           </motion.section>
 
           <motion.section variants={block} className="grid grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-            <div className="glass-card p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="font-heading text-xs font-semibold uppercase tracking-[0.25em] text-[var(--text-secondary)]">
-                  Position distribution
-                </h2>
-                <div className="flex items-center gap-2 font-mono text-[10px] text-[var(--text-secondary)]">
-                  {distributionDate ? <span>published {distributionDate}</span> : null}
-                  <span>top 20</span>
-                </div>
-              </div>
-              <div className="grid gap-x-6 lg:grid-cols-2">
-                {holdings.slice(0, 20).map((holding) => (
-                  <HoldingBar key={holding.ticker} holding={holding} maxWeight={maxWeight} />
-                ))}
-              </div>
-            </div>
+            <HoldingsDistributionChart
+              distributionDate={distributionDate}
+              holdings={holdings}
+              profileId={profile}
+              profileLabel={profileConfig.label}
+            />
 
             <div className="glass-card p-4">
               <div className="mb-3 flex items-center justify-between">
