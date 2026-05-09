@@ -187,6 +187,8 @@ export interface TaxCostTraceMatch {
   buy_trade_id: string;
   buy_price: number | string;
   buy_currency: string;
+  buy_quantity?: number | string;
+  buy_remaining_quantity?: number | string;
   matched_quantity: number | string;
   unit_cost_cny: number | string;
   matched_cost_cny: number | string;
@@ -216,6 +218,12 @@ export interface TaxReport {
   status: "complete" | "incomplete";
   tax_rate: number | string;
   tax_fx_rate_date: string;
+  tax_fx_rates: Record<string, number | string>;
+  tax_fx_rate_dates?: Record<string, string>;
+  estimated_fx_rates?: string[];
+  annual_sell_amount_cny: number | string;
+  position_quantities?: Record<string, number | string>;
+  current_position_quantities?: Record<string, number | string>;
   missing_fx_rates: string[];
   unmatched_cost_lots: Array<{ symbol: string; quantity: number | string }>;
   best_scheme_key: string | null;
@@ -226,6 +234,12 @@ export interface TaxReport {
     dividend_tax_cny: number | string;
     foreign_tax_paid_cny: number | string;
     dividend_income_by_country: Record<string, number | string>;
+  };
+  money_market: {
+    subscription_cny: number | string;
+    redemption_cny: number | string;
+    net_cashflow_cny: number | string;
+    transaction_count: number;
   };
   economic_fx: {
     event_date_cash_value_cny: number | string;

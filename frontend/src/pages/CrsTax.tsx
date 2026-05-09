@@ -1,45 +1,74 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { fetchTaxFxRates, fetchTaxRaw, fetchTaxReport, importTaxFxRates, triggerTaxCollect } from "@/api/tax";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { fetchCollectJobs } from "@/api/collect";
+import { fetchTaxRaw, fetchTaxReport, triggerTaxCollect } from "@/api/tax";
 import type { TaxScheme } from "@/api/types";
 import { GlassCard } from "@/components/cards/GlassCard";
 import { toNumber } from "@/lib/format";
 
 const currentYear = new Date().getFullYear();
 const years = Array.from({ length: 8 }, (_, i) => currentYear - i);
-const filingMonths = [3, 4, 5, 6];
 const rawPageSizeOptions = [10, 20, 30] as const;
 const rawAllPageSize = 500;
-const rawKinds = ["executions", "orders", "cashflows", "fx"] as const;
-const hiddenRawKeys = new Set(["id", "order_id", "trade_id", "execution_id"]);
+const rawKinds = ["executions", "orders", "cashflows", "dividends", "fx"] as const;
+type RawKind = (typeof rawKinds)[number];
+type RawTradeTimeOrder = "asc" | "desc";
+const defaultSchemeKey = "highest_cost:portfolio_net";
+const defaultCostMethod = "highest_cost";
+const defaultLossPolicy = "portfolio_net";
+const methodOptions = ["highest_cost", "lifo", "weighted_average", "fifo"] as const;
+const lossPolicyOptions = ["portfolio_net", "per_sale", "symbol_net"] as const;
+const rawColumns: Record<RawKind, string[]> = {
+  executions: ["order_id", "trade_id", "symbol", "side", "trade_done_at", "price", "quantity", "total_amount"],
+  orders: ["order_id", "symbol", "side", "status", "currency", "executed_price", "executed_quantity", "trade_count", "submitted_at"],
+  cashflows: ["transaction_flow_name", "direction", "business_type", "balance", "currency", "business_time", "symbol", "description"],
+  dividends: ["business_time", "symbol", "kind", "amount", "currency", "cny_amount", "description"],
+  fx: ["rate_date", "currency", "cny_rate", "source"],
+};
+const rawDecimalKeys = new Set(["price", "quantity", "total_amount", "executed_price", "executed_quantity", "balance", "amount", "cny_amount", "cny_rate"]);
+const rawBeijingTimeKeys = new Set(["trade_done_at", "submitted_at", "business_time", "started_at", "completed_at", "created_at"]);
 const ignoredOrderStatuses = new Set(["Canceled", "Expired", "Rejected", "Unknown"]);
 type Lang = "en" | "zh";
+type ExpandedRawLink = {
+  key: string;
+  relatedKind: RawKind;
+  orderId: string;
+} | null;
+
+function normalizeSchemeKey(value: string | null): string {
+  return (value ?? defaultSchemeKey).replace(":symbol_net", ":portfolio_net");
+}
+
 type CopyKey =
   | "title"
   | "subtitle"
-  | "filingPrefix"
   | "collect"
+  | "collectStarting"
+  | "collectRunning"
+  | "collectRefreshing"
+  | "collectComplete"
+  | "collectFailed"
   | "recommendedTaxDue"
   | "capitalTaxableGain"
   | "dividendIncome"
-  | "bestExplainableScheme"
+  | "calculationRules"
+  | "costMethodRule"
+  | "lossPolicyRule"
+  | "taxableRule"
   | "noReportData"
   | "proceeds"
+  | "annualSellAmount"
   | "cost"
   | "foreignCredit"
   | "sales"
   | "estimationNote"
   | "fxCompleteness"
   | "taxFxDate"
-  | "missingRates"
-  | "missingCostLots"
-  | "importFxCsv"
-  | "importing"
-  | "fxSupported"
-  | "fetchingFx"
-  | "fetchOfficialFx"
+  | "fxRate"
+  | "estimatedFxRate"
+  | "noFxRate"
   | "fxSource"
   | "incomeSplit"
   | "capitalTax"
@@ -49,6 +78,11 @@ type CopyKey =
   | "foreignTaxPaid"
   | "netTaxDue"
   | "economicFxLens"
+  | "moneyMarketLens"
+  | "moneyMarketSubscription"
+  | "moneyMarketRedemption"
+  | "moneyMarketNet"
+  | "moneyMarketTransactions"
   | "eventDateCashValue"
   | "observableFxEffect"
   | "observableCashFlows"
@@ -68,10 +102,14 @@ type CopyKey =
   | "perPage"
   | "loadingRaw"
   | "noRawRows"
+  | "rawSearch"
+  | "filterMonth"
+  | "filterSide"
   | "langButton"
   | "rawExecutions"
   | "rawOrders"
   | "rawCash"
+  | "rawDividends"
   | "rawFx"
   | "costTraceTitle"
   | "costTraceHint"
@@ -111,29 +149,33 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
   en: {
     title: "CRS tax estimator",
     subtitle: "CRS is reporting infrastructure; this page estimates China resident individual overseas securities tax.",
-    filingPrefix: "Filing M",
     collect: "Collect",
+    collectStarting: "Starting collection",
+    collectRunning: "Collecting in background",
+    collectRefreshing: "Refreshing report",
+    collectComplete: "Collection complete",
+    collectFailed: "Collection failed",
     recommendedTaxDue: "Recommended tax due",
     capitalTaxableGain: "Capital taxable gain",
     dividendIncome: "Dividend income",
-    bestExplainableScheme: "Best explainable scheme",
+    calculationRules: "Calculation rules",
+    costMethodRule: "Cost matching",
+    lossPolicyRule: "Loss offset",
+    taxableRule: "Taxable gain",
     noReportData: "No report data",
     proceeds: "Proceeds",
+    annualSellAmount: "Annual sell amount",
     cost: "Cost",
     foreignCredit: "Foreign credit",
     sales: "Sales",
     estimationNote:
       "This is an estimation aid, not tax advice. Aggressive schemes are shown for comparison and should be reviewed before filing.",
-    fxCompleteness: "FX completeness",
-    taxFxDate: "Tax FX date",
-    missingRates: "Missing rates",
-    missingCostLots: "Missing cost lots",
-    importFxCsv: "Import FX CSV",
-    importing: "Importing...",
-    fxSupported: "USD/HKD CNY rates supported.",
-    fetchingFx: "Fetching CFETS rates...",
-    fetchOfficialFx: "Fetch official USD/HKD rates",
-    fxSource: "Source: ChinaMoney / CFETS midpoint.",
+    fxCompleteness: "Year-end FX midpoint",
+    taxFxDate: "Midpoint date",
+    fxRate: "CNY midpoint",
+    estimatedFxRate: "Using prior year-end",
+    noFxRate: "No year-end midpoint rate",
+    fxSource: "Uses the tax-year Dec 31 RMB midpoint; before year-end data exists, uses the prior year-end midpoint.",
     incomeSplit: "Income split",
     capitalTax: "Capital tax",
     matchedSaleQty: "Matched sale qty",
@@ -142,6 +184,11 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     foreignTaxPaid: "Foreign tax paid",
     netTaxDue: "Net tax due",
     economicFxLens: "Economic FX lens",
+    moneyMarketLens: "Money market cashflows",
+    moneyMarketSubscription: "Subscriptions",
+    moneyMarketRedemption: "Redemptions",
+    moneyMarketNet: "Net cashflow",
+    moneyMarketTransactions: "Transactions",
     eventDateCashValue: "Event-date cash value",
     observableFxEffect: "Observable FX effect",
     observableCashFlows: "Observable cash flows",
@@ -161,10 +208,14 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     perPage: "/ page",
     loadingRaw: "Loading raw rows...",
     noRawRows: "No raw rows collected yet.",
+    rawSearch: "Search order or trade ID",
+    filterMonth: "Month",
+    filterSide: "Side",
     langButton: "中文",
     rawExecutions: "Executions",
     rawOrders: "Orders",
     rawCash: "Cash",
+    rawDividends: "Dividends",
     rawFx: "FX",
     costTraceTitle: "Cost trace",
     costTraceHint: "Click a cost method to review how sales are matched to buy lots for audit support.",
@@ -185,7 +236,7 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     buyFeeCny: "Buy fee CNY",
     traceEmpty: "No traceable lot details for this method.",
     settlementTitle: "Your estimated filing result",
-    settlementSubtitle: "A simplified calculation using the selected year, filing month, FX date, and recommended explainable method.",
+    settlementSubtitle: "A simplified calculation using the selected year, year-end FX date, and selected basis.",
     estimatedDue: "Estimated amount due",
     readyToReview: "Ready to review",
     needsAttention: "Needs attention",
@@ -203,28 +254,32 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
   zh: {
     title: "CRS 税务测算",
     subtitle: "CRS 是涉税信息报送机制；本页测算中国税收居民个人境外证券所得个税。",
-    filingPrefix: "申报月份 ",
     collect: "采集",
+    collectStarting: "正在启动采集",
+    collectRunning: "后台采集中",
+    collectRefreshing: "正在刷新报告",
+    collectComplete: "采集完成",
+    collectFailed: "采集失败",
     recommendedTaxDue: "建议口径应补税额",
     capitalTaxableGain: "资本应税收益",
     dividendIncome: "股息收入",
-    bestExplainableScheme: "最佳可解释方案",
+    calculationRules: "计算逻辑",
+    costMethodRule: "成本匹配",
+    lossPolicyRule: "亏损抵扣",
+    taxableRule: "应税规则",
     noReportData: "暂无报告数据",
     proceeds: "卖出收入",
+    annualSellAmount: "全年卖出成交额",
     cost: "成本",
     foreignCredit: "境外税抵免",
     sales: "卖出笔数",
     estimationNote: "这是申报测算辅助，不替代税务建议。激进口径仅用于对比，申报前应复核确认。",
-    fxCompleteness: "汇率完整性",
-    taxFxDate: "税法汇率日期",
-    missingRates: "缺失汇率",
-    missingCostLots: "缺失成本批次",
-    importFxCsv: "导入汇率 CSV",
-    importing: "导入中...",
-    fxSupported: "支持 USD/HKD 对人民币汇率。",
-    fetchingFx: "正在获取官方汇率...",
-    fetchOfficialFx: "获取官方 USD/HKD 汇率",
-    fxSource: "来源：中国货币网 / CFETS 中间价。",
+    fxCompleteness: "年度汇率中间价",
+    taxFxDate: "中间价日期",
+    fxRate: "人民币中间价",
+    estimatedFxRate: "暂用上一年年末",
+    noFxRate: "暂无年度中间价",
+    fxSource: "按年度境外所得申报口径，使用纳税年度 12 月 31 日人民币汇率中间价；本年度年末价未生成前，暂用上一年 12 月 31 日中间价。",
     incomeSplit: "所得拆分",
     capitalTax: "资本税额",
     matchedSaleQty: "已匹配卖出数量",
@@ -233,6 +288,11 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     foreignTaxPaid: "境外已缴税",
     netTaxDue: "应补税额",
     economicFxLens: "经济汇率视角",
+    moneyMarketLens: "货币基金现金流",
+    moneyMarketSubscription: "申购金额",
+    moneyMarketRedemption: "赎回金额",
+    moneyMarketNet: "净现金流",
+    moneyMarketTransactions: "流水笔数",
     eventDateCashValue: "交易日现金价值",
     observableFxEffect: "可观测汇率影响",
     observableCashFlows: "可观测现金流",
@@ -252,10 +312,14 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     perPage: "/ 页",
     loadingRaw: "正在加载原始流水...",
     noRawRows: "暂无原始流水。",
+    rawSearch: "搜索订单或成交 ID",
+    filterMonth: "月份",
+    filterSide: "方向",
     langButton: "EN",
     rawExecutions: "成交",
     rawOrders: "订单",
     rawCash: "现金流",
+    rawDividends: "股息",
     rawFx: "汇率",
     costTraceTitle: "成本追踪",
     costTraceHint: "点击成本方法，可查看每笔卖出如何匹配买入批次，便于回溯和留档。",
@@ -276,7 +340,7 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     buyFeeCny: "买入费用 CNY",
     traceEmpty: "该方法暂无可回溯批次明细。",
     settlementTitle: "本年度汇算结果",
-    settlementSubtitle: "按所选年度、申报月份、汇率日期和推荐可解释口径生成的简化结果。",
+    settlementSubtitle: "按所选年度、年末汇率日期和采用口径生成的简化结果。",
     estimatedDue: "预计应补",
     readyToReview: "可复核",
     needsAttention: "需关注",
@@ -295,45 +359,59 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
 
 const rawHeaderLabels: Record<Lang, Record<string, string>> = {
   en: {
+    order_id: "Order ID",
+    trade_id: "Trade ID",
     symbol: "Symbol",
     side: "Side",
     status: "Status",
     currency: "Currency",
     executed_price: "Executed price",
     executed_quantity: "Executed quantity",
+    trade_count: "Trade count",
     submitted_at: "Submitted at",
     updated_at: "Updated at",
     trade_done_at: "Trade time",
     price: "Price",
     quantity: "Quantity",
+    total_amount: "Total",
     transaction_flow_name: "Flow",
     direction: "Direction",
     business_type: "Business type",
     balance: "Amount",
     business_time: "Business time",
     description: "Description",
+    kind: "Type",
+    amount: "Amount",
+    cny_amount: "CNY amount",
     rate_date: "Rate date",
     cny_rate: "CNY rate",
     source: "Source",
   },
   zh: {
+    order_id: "订单 ID",
+    trade_id: "成交 ID",
     symbol: "标的",
     side: "方向",
     status: "状态",
     currency: "币种",
     executed_price: "成交均价",
     executed_quantity: "成交数量",
+    trade_count: "成交笔数",
     submitted_at: "提交时间",
     updated_at: "更新时间",
     trade_done_at: "成交时间",
     price: "成交价",
     quantity: "数量",
+    total_amount: "成交额",
     transaction_flow_name: "流水类型",
     direction: "方向",
     business_type: "业务类型",
     balance: "金额",
     business_time: "业务时间",
     description: "说明",
+    kind: "类型",
+    amount: "金额",
+    cny_amount: "人民币金额",
     rate_date: "汇率日期",
     cny_rate: "人民币汇率",
     source: "来源",
@@ -348,6 +426,8 @@ const rawValueLabels: Record<Lang, Record<string, string>> = {
     PartialWithdrawal: "Partial filled",
     Out: "Out",
     In: "In",
+    income: "Income",
+    tax: "Tax",
   },
   zh: {
     Buy: "买入",
@@ -356,6 +436,8 @@ const rawValueLabels: Record<Lang, Record<string, string>> = {
     PartialWithdrawal: "部分成交撤单",
     Out: "支出",
     In: "收入",
+    income: "收入",
+    tax: "预扣税",
   },
 };
 
@@ -366,8 +448,62 @@ function money(v: number | string | null | undefined): string {
   })}`;
 }
 
+function formatFxRate(v: number | string | null | undefined): string {
+  return toNumber(v).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function compactDecimal(v: number | string | null | undefined): string {
+  return toNumber(v).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function currencyForRawRow(item?: Record<string, unknown>): string {
+  if (typeof item?.currency === "string" && item.currency) return item.currency;
+  const symbol = typeof item?.symbol === "string" ? item.symbol.toUpperCase() : "";
+  if (symbol.endsWith(".US")) return "USD";
+  if (symbol.endsWith(".HK")) return "HKD";
+  if (symbol.endsWith(".SH") || symbol.endsWith(".SZ")) return "CNY";
+  return "";
+}
+
+function formatRawAmountWithCurrency(value: unknown, item?: Record<string, unknown>): string {
+  const formatted = toNumber(value as number | string | null | undefined).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const currency = currencyForRawRow(item);
+  return currency ? `${formatted} ${currency}` : formatted;
+}
+
+function formatBeijingTime(value: unknown): string {
+  const raw = String(value);
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(parsed);
+}
+
+function instrumentMultiplier(item?: Record<string, unknown>): number {
+  const symbol = typeof item?.symbol === "string" ? item.symbol.toUpperCase() : "";
+  return /[A-Z.]+\d{6}[CP]\d+\.US$/.test(symbol) ? 100 : 1;
+}
+
 function methodLabel(method: string, lang: Lang): string {
   if (method === "fifo") return "FIFO";
+  if (method === "lifo") return lang === "zh" ? "后进先出" : "LIFO";
   if (method === "weighted_average") return lang === "zh" ? "移动加权" : "Weighted avg";
   if (method === "highest_cost") return lang === "zh" ? "高成本优先" : "High cost";
   return method;
@@ -379,6 +515,12 @@ function methodDescription(method: string, lang: Lang): string {
       return "先进先出：每次卖出优先消耗最早剩余的买入批次。成本为匹配买入价加分摊买入费用。";
     }
     return "First in, first out: each sale consumes the earliest remaining buy lots. Cost basis is the matched buy price plus allocated buy fees.";
+  }
+  if (method === "lifo") {
+    if (lang === "zh") {
+      return "后进先出：每次卖出优先消耗卖出前最近买入且仍有剩余的批次。不会使用卖出之后发生的买入。";
+    }
+    return "Last in, first out: each sale consumes the latest remaining buy lots available before the sale. Buys after the sale are never used.";
   }
   if (method === "weighted_average") {
     if (lang === "zh") {
@@ -397,10 +539,40 @@ function methodDescription(method: string, lang: Lang): string {
 }
 
 function lossLabel(policy: string, lang: Lang): string {
-  if (policy === "per_sale") return lang === "zh" ? "逐笔" : "Per sale";
-  if (policy === "symbol_net") return lang === "zh" ? "同标的净额" : "Symbol net";
-  if (policy === "portfolio_net") return lang === "zh" ? "组合净额" : "Portfolio net";
+  if (policy === "per_sale") return lang === "zh" ? "盈利计税（亏损不抵）" : "Gain-only";
+  if (policy === "symbol_net") return lang === "zh" ? "同标的抵扣" : "Same-symbol netting";
+  if (policy === "portfolio_net") return lang === "zh" ? "盈亏相抵" : "Portfolio netting";
   return policy;
+}
+
+function schemeKeyFor(costMethod: string, lossPolicy: string): string {
+  return `${costMethod}:${lossPolicy}`;
+}
+
+function lossDescription(policy: string, lang: Lang): string {
+  if (policy === "per_sale") {
+    if (lang === "zh") return "逐笔计算每次卖出收益，单笔亏损不抵扣其他卖出收益；只有正收益进入应税收益。";
+    return "Each sale is evaluated separately. Loss-making sales do not offset other gains; only positive sale gains are taxable.";
+  }
+  if (policy === "symbol_net") {
+    if (lang === "zh") return "先按同一标的汇总全年卖出收益和亏损；只允许同标的内部亏损抵扣盈利。";
+    return "Gains and losses are netted within the same symbol only.";
+  }
+  if (policy === "portfolio_net") {
+    if (lang === "zh") return "先汇总组合内全部标的的全年收益和亏损，亏损可以抵扣其他标的盈利；组合净额小于 0 时按 0 计入应税收益。";
+    return "Gains and losses are netted across the portfolio. A negative portfolio net contributes 0 taxable gain.";
+  }
+  if (lang === "zh") return "用于决定亏损是否可以抵扣其他卖出收益的计算口径。";
+  return "Determines whether losses can offset other sale gains.";
+}
+
+function taxableDescription(scheme: TaxScheme, lang: Lang): string {
+  if (lang === "zh") {
+    return `资本应税收益为 ${money(scheme.capital_taxable_gain_cny)}，按 20% 测算资本税额 ${money(scheme.capital_tax_cny)}；再加股息税，并扣除可用境外税抵免。`;
+  }
+  return `Capital taxable gain is ${money(scheme.capital_taxable_gain_cny)}. Capital tax is estimated at 20% (${money(
+    scheme.capital_tax_cny,
+  )}), then dividend tax is added and available foreign tax credit is deducted.`;
 }
 
 function riskClass(scheme: TaxScheme): string {
@@ -412,35 +584,114 @@ function riskClass(scheme: TaxScheme): string {
 export function CrsTax() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [urlParams, setUrlParams] = useSearchParams();
+  const initialYear = Number(urlParams.get("year"));
   const rawScrollYRef = useRef<number | null>(null);
-  const [lang, setLang] = useState<Lang>("zh");
-  const [year, setYear] = useState(Math.min(2025, currentYear));
-  const [filingMonth, setFilingMonth] = useState(6);
+  const [lang, setLang] = useState<Lang>(urlParams.get("lang") === "en" ? "en" : "zh");
+  const [year, setYear] = useState(Number.isFinite(initialYear) && initialYear >= 2000 ? initialYear : Math.min(2025, currentYear));
   const [rawKind, setRawKind] = useState<(typeof rawKinds)[number]>("executions");
   const [rawPage, setRawPage] = useState(0);
   const [rawPageSize, setRawPageSize] = useState<number | "all">(20);
+  const [rawSearch, setRawSearch] = useState("");
+  const [rawOrderMonth, setRawOrderMonth] = useState<number | "all">("all");
+  const [rawOrderSide, setRawOrderSide] = useState("");
+  const [rawExecutionSide, setRawExecutionSide] = useState("");
+  const [rawTradeTimeOrder, setRawTradeTimeOrder] = useState<RawTradeTimeOrder>("desc");
+  const [expandedRawLink, setExpandedRawLink] = useState<ExpandedRawLink>(null);
   const [showSchemeComparison, setShowSchemeComparison] = useState(false);
-  const [fxImportResult, setFxImportResult] = useState<string | null>(null);
-  const [fxFetchResult, setFxFetchResult] = useState<string | null>(null);
+  const [selectedSchemeKey, setSelectedSchemeKey] = useState(() => normalizeSchemeKey(urlParams.get("scheme_key")));
+  const [collectStartedAt, setCollectStartedAt] = useState<number | null>(null);
+  const [collectProgress, setCollectProgress] = useState(0);
 
   const reportQuery = useQuery({
-    queryKey: ["tax-report", year, filingMonth],
-    queryFn: () => fetchTaxReport(year, filingMonth),
+    queryKey: ["tax-report", year],
+    queryFn: () => fetchTaxReport(year),
     refetchInterval: 60_000,
   });
+  const collectJobsQuery = useQuery({
+    queryKey: ["collect-jobs"],
+    queryFn: () => fetchCollectJobs(80),
+    refetchInterval: collectStartedAt ? 2_000 : 60_000,
+  });
+
+  useEffect(() => {
+    if (!urlParams.has("filing_month")) return;
+    const nextParams = new URLSearchParams(urlParams);
+    nextParams.delete("filing_month");
+    setUrlParams(nextParams, { replace: true });
+  }, [setUrlParams, urlParams]);
+
+  useEffect(() => {
+    const nextParams = new URLSearchParams(urlParams);
+    let changed = false;
+    if (nextParams.get("year") !== String(year)) {
+      nextParams.set("year", String(year));
+      changed = true;
+    }
+    if (nextParams.get("scheme_key") !== selectedSchemeKey) {
+      nextParams.set("scheme_key", selectedSchemeKey);
+      changed = true;
+    }
+    if (nextParams.get("lang") !== lang) {
+      nextParams.set("lang", lang);
+      changed = true;
+    }
+    if (changed) {
+      setUrlParams(nextParams, { replace: true });
+    }
+  }, [lang, selectedSchemeKey, setUrlParams, urlParams, year]);
 
   const rawLimit = rawPageSize === "all" ? rawAllPageSize : rawPageSize;
   const rawOffset = rawPageSize === "all" ? 0 : rawPage * rawLimit;
 
+  const rawSide = rawKind === "executions" ? rawExecutionSide : rawKind === "orders" ? rawOrderSide : "";
   const rawQuery = useQuery({
-    queryKey: ["tax-raw", rawKind, year, rawPage, rawPageSize],
-    queryFn: () => fetchTaxRaw(rawKind, rawLimit, year, rawOffset),
-    placeholderData: keepPreviousData,
+    queryKey: [
+      "tax-raw",
+      rawKind,
+      year,
+      rawPage,
+      rawPageSize,
+      rawSearch.trim(),
+      rawOrderMonth,
+      rawSide,
+      rawTradeTimeOrder,
+    ],
+    queryFn: () =>
+      fetchTaxRaw(
+        rawKind,
+        rawLimit,
+        year,
+        rawOffset,
+        rawSearch.trim(),
+        rawKind === "orders" ? rawOrderMonth : "all",
+        rawSide,
+        rawKind === "executions" ? rawTradeTimeOrder : undefined,
+      ),
   });
+  const relatedRawQuery = useQuery({
+    queryKey: ["tax-raw-related", expandedRawLink?.relatedKind, year, expandedRawLink?.orderId],
+    queryFn: () => fetchTaxRaw(expandedRawLink?.relatedKind ?? "executions", 20, year, 0, expandedRawLink?.orderId ?? ""),
+    enabled: expandedRawLink !== null,
+  });
+  const latestTaxCollectJob = useMemo(() => {
+    const startedAt = collectStartedAt ? collectStartedAt - 5_000 : 0;
+    return (collectJobsQuery.data ?? [])
+      .filter((job) => {
+        if (job.job_type !== "tax") return false;
+        const jobStartedAt = new Date(job.started_at ?? job.created_at).getTime();
+        return Number.isFinite(jobStartedAt) && jobStartedAt >= startedAt;
+      })
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+  }, [collectJobsQuery.data, collectStartedAt]);
 
   useEffect(() => {
     setRawPage(0);
-  }, [rawKind, year, rawPageSize]);
+  }, [rawKind, year, rawPageSize, rawSearch, rawOrderMonth, rawOrderSide, rawExecutionSide, rawTradeTimeOrder]);
+
+  useEffect(() => {
+    setExpandedRawLink(null);
+  }, [rawKind, year, rawSearch, rawSide, rawTradeTimeOrder]);
 
   useLayoutEffect(() => {
     if (rawScrollYRef.current === null || rawQuery.isFetching) return;
@@ -453,44 +704,75 @@ export function CrsTax() {
 
   const collectMutation = useMutation({
     mutationFn: () => triggerTaxCollect({ start_year: 2019, end_year: currentYear }),
+    onMutate: () => {
+      setCollectStartedAt(Date.now());
+      setCollectProgress(6);
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["collect-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["tax-report", year] });
+      void queryClient.invalidateQueries({ queryKey: ["tax-raw"] });
+      [2_000, 6_000, 15_000, 30_000].forEach((delay) => {
+        window.setTimeout(() => {
+          void queryClient.invalidateQueries({ queryKey: ["collect-jobs"] });
+          void queryClient.invalidateQueries({ queryKey: ["tax-report", year] });
+          void queryClient.invalidateQueries({ queryKey: ["tax-raw"] });
+        }, delay);
+      });
+    },
+    onError: () => {
+      setCollectProgress(100);
+      window.setTimeout(() => {
+        setCollectStartedAt(null);
+        setCollectProgress(0);
+      }, 1_500);
     },
   });
 
-  const fxMutation = useMutation({
-    mutationFn: importTaxFxRates,
-    onSuccess: (data) => {
-      setFxImportResult(`${data.imported} rates · ${data.currencies.join(", ") || "no currency"}`);
-      void queryClient.invalidateQueries({ queryKey: ["tax-report"] });
-      void queryClient.invalidateQueries({ queryKey: ["tax-raw"] });
-    },
-  });
+  useEffect(() => {
+    if (!collectStartedAt) return;
+    const timer = window.setInterval(() => {
+      const elapsed = Date.now() - collectStartedAt;
+      const nextProgress = Math.min(95, 8 + Math.floor((elapsed / 30_000) * 87));
+      setCollectProgress((current) => Math.max(current, nextProgress));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [collectStartedAt]);
 
-  const fxFetchMutation = useMutation({
-    mutationFn: () =>
-      fetchTaxFxRates({
-        start_date: `${Math.min(year - 1, year)}-01-01`,
-        end_date: new Date().toISOString().slice(0, 10),
-      }),
-    onSuccess: (data) => {
-      setFxFetchResult(
-        `${data.imported} rates · ${Object.entries(data.by_currency)
-          .map(([currency, count]) => `${currency}:${count}`)
-          .join(", ")}`,
-      );
-      void queryClient.invalidateQueries({ queryKey: ["tax-report"] });
-      void queryClient.invalidateQueries({ queryKey: ["tax-raw"] });
-    },
-  });
+  useEffect(() => {
+    if (!collectStartedAt || !latestTaxCollectJob) return;
+    if (!["completed", "failed"].includes(latestTaxCollectJob.status)) return;
+    setCollectProgress(100);
+    void queryClient.invalidateQueries({ queryKey: ["collect-jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["tax-report", year] });
+    void queryClient.invalidateQueries({ queryKey: ["tax-raw"] });
+    const timer = window.setTimeout(() => {
+      setCollectStartedAt(null);
+      setCollectProgress(0);
+    }, 1_500);
+    return () => window.clearTimeout(timer);
+  }, [collectStartedAt, latestTaxCollectJob, queryClient, year]);
 
   const report = reportQuery.data;
-  const best = report?.best_scheme ?? null;
   const sortedSchemes = useMemo(
-    () => [...(report?.schemes ?? [])].sort((a, b) => toNumber(a.tax_due_cny) - toNumber(b.tax_due_cny)),
+    () =>
+      [...(report?.schemes ?? [])].sort((a, b) => {
+        const aPriority = a.scheme_key === defaultSchemeKey ? 0 : a.loss_policy === "portfolio_net" ? 1 : 2;
+        const bPriority = b.scheme_key === defaultSchemeKey ? 0 : b.loss_policy === "portfolio_net" ? 1 : 2;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+        return toNumber(a.tax_due_cny) - toNumber(b.tax_due_cny);
+      }),
     [report?.schemes],
   );
+  const best =
+    report?.schemes.find((item) => item.scheme_key === selectedSchemeKey) ??
+    report?.schemes.find((item) => item.scheme_key === defaultSchemeKey) ??
+    report?.best_scheme ??
+    null;
+  const selectedMethod = best?.cost_method ?? defaultCostMethod;
+  const selectedLossPolicy = best?.loss_policy ?? defaultLossPolicy;
   const rawItems = useMemo(() => {
+    if (rawQuery.data?.kind !== rawKind) return [];
     const items = rawQuery.data?.items ?? [];
     if (rawKind !== "orders") return items;
     return items.filter((item) => {
@@ -498,34 +780,126 @@ export function CrsTax() {
       const status = String(item.status ?? "");
       return quantity > 0 && !ignoredOrderStatuses.has(status);
     });
-  }, [rawKind, rawQuery.data?.items]);
-  const rawKeys = useMemo(
-    () => Array.from(new Set(rawItems.flatMap((item) => Object.keys(item).filter((key) => !hiddenRawKeys.has(key))))).slice(0, 8),
-    [rawItems],
-  );
+  }, [rawKind, rawQuery.data?.items, rawQuery.data?.kind]);
+  const rawKeys = rawColumns[rawKind];
   const rawTotal = rawQuery.data?.total ?? 0;
   const rawStart = rawTotal ? rawOffset + 1 : 0;
   const rawEnd = rawPageSize === "all" ? rawTotal : Math.min(rawTotal, rawOffset + rawItems.length);
   const hasPreviousRawPage = rawPageSize !== "all" && rawPage > 0;
   const hasNextRawPage = rawPageSize !== "all" && rawOffset + rawItems.length < rawTotal;
   const t = (key: CopyKey) => copy[lang][key];
+  const isCollecting = collectMutation.isPending || collectStartedAt !== null;
+  const collectProgressLabel = collectMutation.isPending
+    ? t("collectStarting")
+    : latestTaxCollectJob?.status === "completed"
+      ? t("collectComplete")
+      : latestTaxCollectJob?.status === "failed"
+        ? t("collectFailed")
+        : reportQuery.isFetching || rawQuery.isFetching
+          ? t("collectRefreshing")
+          : t("collectRunning");
   const rawKindLabel = (key: (typeof rawKinds)[number]) => {
     if (key === "executions") return t("rawExecutions");
     if (key === "orders") return t("rawOrders");
     if (key === "cashflows") return t("rawCash");
+    if (key === "dividends") return t("rawDividends");
     return t("rawFx");
   };
   const rawHeaderLabel = (key: string) => rawHeaderLabels[lang][key] ?? key;
-  const rawCellValue = (key: string, value: unknown) => {
+  const rawCellValue = (key: string, value: unknown, item?: Record<string, unknown>) => {
+    if (key === "total_amount" && value == null) {
+      const price = toNumber(item?.price as number | string | null | undefined);
+      const quantity = toNumber(item?.quantity as number | string | null | undefined);
+      if (price > 0 && quantity > 0) {
+        return formatRawAmountWithCurrency(price * quantity * instrumentMultiplier(item), item);
+      }
+    }
     if (value == null) return "—";
     const text = String(value);
-    if (["side", "status", "direction", "business_type"].includes(key)) {
+    if (["side", "status", "direction", "business_type", "kind"].includes(key)) {
       return rawValueLabels[lang][text] ?? text;
+    }
+    if (rawBeijingTimeKeys.has(key)) {
+      return formatBeijingTime(text);
+    }
+    if (rawDecimalKeys.has(key)) {
+      if (key === "total_amount") {
+        return formatRawAmountWithCurrency(value, item);
+      }
+      return toNumber(text).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
     }
     return text;
   };
+  const toggleRelatedRawRows = (rowKey: string, relatedKind: RawKind, orderId: string) => {
+    setExpandedRawLink((current) =>
+      current?.key === rowKey ? null : { key: rowKey, relatedKind, orderId },
+    );
+  };
+  const rawCellNode = (key: string, value: unknown, rowKey: string, item: Record<string, unknown>) => {
+    if (key === "total_amount" && value == null) {
+      const price = toNumber(item.price as number | string | null | undefined);
+      const quantity = toNumber(item.quantity as number | string | null | undefined);
+      if (price > 0 && quantity > 0) {
+        return formatRawAmountWithCurrency(price * quantity * instrumentMultiplier(item), item);
+      }
+    }
+    if (value == null) return "—";
+    const text = String(value);
+    if (key === "order_id" && rawKind === "orders") {
+      return (
+        <button
+          type="button"
+          onClick={() => toggleRelatedRawRows(rowKey, "executions", text)}
+          className="max-w-full truncate border-b border-dotted border-[var(--cyan)]/70 text-left text-[var(--cyan)] transition-colors hover:text-[var(--green)]"
+        >
+          {text}
+        </button>
+      );
+    }
+    return rawCellValue(key, value, item);
+  };
   const keepRawScrollPosition = () => {
     rawScrollYRef.current = window.scrollY;
+  };
+  const toggleRawTradeTimeOrder = () => {
+    keepRawScrollPosition();
+    setRawTradeTimeOrder((current) => (current === "desc" ? "asc" : "desc"));
+  };
+  const rawHeaderNode = (key: string) => {
+    if (rawKind === "executions" && key === "side") {
+      return (
+        <select
+          value={rawExecutionSide}
+          onChange={(event) => {
+            keepRawScrollPosition();
+            setRawExecutionSide(event.target.value);
+          }}
+          className="max-w-[120px] rounded-md border border-white/[0.08] bg-[#111118] px-2 py-1 font-mono text-xs text-[var(--text-primary)] outline-none transition-colors hover:border-white/[0.16] focus:border-[var(--cyan)]/50"
+          aria-label={t("filterSide")}
+        >
+          <option value="">{rawHeaderLabel(key)}: {t("all")}</option>
+          <option value="Buy">{rawHeaderLabel(key)}: {rawValueLabels[lang].Buy}</option>
+          <option value="Sell">{rawHeaderLabel(key)}: {rawValueLabels[lang].Sell}</option>
+        </select>
+      );
+    }
+    if (rawKind === "executions" && key === "trade_done_at") {
+      return (
+        <button
+          type="button"
+          onClick={toggleRawTradeTimeOrder}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-left font-medium text-[var(--text-secondary)] transition-colors hover:bg-white/[0.04] hover:text-[var(--text-primary)]"
+          aria-label={`${rawHeaderLabel(key)} ${rawTradeTimeOrder === "desc" ? "desc" : "asc"}`}
+        >
+          <span>{rawHeaderLabel(key)}</span>
+          <span className="text-[var(--cyan)]">{rawTradeTimeOrder === "desc" ? "↓" : "↑"}</span>
+        </button>
+      );
+    }
+    return rawHeaderLabel(key);
   };
 
   return (
@@ -562,26 +936,6 @@ export function CrsTax() {
               </option>
             ))}
           </select>
-          <select
-            value={filingMonth}
-            onChange={(event) => setFilingMonth(Number(event.target.value))}
-            className="rounded-md border border-white/[0.08] bg-[#111118] px-3 py-2 font-mono text-xs text-[var(--text-primary)]"
-          >
-            {filingMonths.map((item) => (
-              <option key={item} value={item}>
-                {t("filingPrefix")}
-                {item}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => collectMutation.mutate()}
-            disabled={collectMutation.isPending}
-            className="rounded-md border border-[var(--cyan)]/45 bg-[var(--cyan)]/10 px-3 py-2 font-mono text-xs text-[var(--cyan)] transition-colors hover:border-[var(--cyan)]/70 disabled:cursor-wait disabled:opacity-50"
-          >
-            {collectMutation.isPending ? `${t("collect")}...` : `⟳ ${t("collect")}`}
-          </button>
         </div>
       </header>
 
@@ -596,6 +950,14 @@ export function CrsTax() {
               <p className="mt-2 font-heading text-4xl font-semibold text-[var(--green)] md:text-5xl">
                 {money(best?.tax_due_cny)}
               </p>
+              <div className="mt-4 inline-flex flex-col rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 font-mono">
+                <span className="text-[11px] uppercase tracking-wider text-[var(--text-secondary)]">
+                  {t("capitalTaxableGain")}
+                </span>
+                <span className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                  {money(best?.capital_taxable_gain_cny)}
+                </span>
+              </div>
             </div>
             <div className="mt-5 flex flex-wrap items-center gap-2">
               <span
@@ -622,16 +984,64 @@ export function CrsTax() {
                 <p className="font-heading text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
                   {t("selectedBasis")}
                 </p>
-                <h2 className="mt-2 font-heading text-xl text-[var(--text-primary)]">
-                  {best ? `${methodLabel(best.cost_method, lang)} · ${lossLabel(best.loss_policy, lang)}` : t("noReportData")}
-                </h2>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <select
+                    value={selectedMethod}
+                    onChange={(event) => setSelectedSchemeKey(schemeKeyFor(event.target.value, selectedLossPolicy))}
+                    disabled={!sortedSchemes.length}
+                    className="min-w-[170px] rounded-md border border-white/[0.08] bg-[#111118] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none transition-colors hover:border-white/[0.16] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {!sortedSchemes.length && <option value="">{t("noReportData")}</option>}
+                    {methodOptions.map((method) => (
+                      <option key={method} value={method}>
+                        {methodLabel(method, lang)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={selectedLossPolicy}
+                    onChange={(event) => setSelectedSchemeKey(schemeKeyFor(selectedMethod, event.target.value))}
+                    disabled={!sortedSchemes.length}
+                    className="min-w-[220px] rounded-md border border-white/[0.08] bg-[#111118] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none transition-colors hover:border-white/[0.16] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {!sortedSchemes.length && <option value="">{t("noReportData")}</option>}
+                    {lossPolicyOptions.map((policy) => (
+                      <option key={policy} value={policy}>
+                        {lossLabel(policy, lang)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => collectMutation.mutate()}
+                    disabled={isCollecting}
+                    className="inline-flex items-center gap-2 rounded-md border border-[var(--cyan)]/45 bg-[var(--cyan)]/10 px-3 py-2 font-mono text-sm text-[var(--cyan)] transition-colors hover:border-[var(--cyan)]/70 disabled:cursor-wait disabled:opacity-70"
+                  >
+                    <span className={isCollecting ? "inline-block animate-spin" : ""}>⟳</span>
+                    <span>{isCollecting ? collectProgressLabel : t("collect")}</span>
+                  </button>
+                </div>
+                {isCollecting && (
+                  <div className="mt-3 max-w-[560px] rounded-md border border-[var(--cyan)]/20 bg-[var(--cyan)]/5 p-3">
+                    <div className="flex items-center justify-between gap-3 font-mono text-[11px] text-[var(--text-secondary)]">
+                      <span>{collectProgressLabel}</span>
+                      <span className="text-[var(--cyan)]">{Math.round(collectProgress)}%</span>
+                    </div>
+                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+                      <div
+                        className="h-full rounded-full bg-[var(--cyan)] transition-all duration-500"
+                        style={{ width: `${Math.max(4, collectProgress)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
               {best && (
                 <button
                   type="button"
                   onClick={() =>
                     navigate(
-                      `/crs-tax/cost-trace?year=${year}&filing_month=${filingMonth}&scheme_key=${encodeURIComponent(
+                      `/crs-tax/cost-trace?year=${year}&scheme_key=${encodeURIComponent(
                         best.scheme_key,
                       )}&lang=${lang}`,
                     )
@@ -658,11 +1068,8 @@ export function CrsTax() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <p className="font-heading text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
-                {t("bestExplainableScheme")}
+                {t("calculationRules")}
               </p>
-              <h2 className="mt-2 font-heading text-xl text-[var(--text-primary)]">
-                {best ? `${methodLabel(best.cost_method, lang)} · ${lossLabel(best.loss_policy, lang)}` : t("noReportData")}
-              </h2>
             </div>
             <span
               className={`rounded-md border px-2 py-1 font-mono text-[11px] uppercase ${best ? riskClass(best) : "border-white/[0.08] text-[var(--text-secondary)]"}`}
@@ -670,7 +1077,15 @@ export function CrsTax() {
               {report?.status ?? "empty"}
             </span>
           </div>
-          <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {best && (
+            <div className="mt-5 space-y-3 border-t border-white/[0.06] pt-4 font-mono text-xs leading-5">
+              <RuleBlock label={t("costMethodRule")} value={methodDescription(best.cost_method, lang)} />
+              <RuleBlock label={t("lossPolicyRule")} value={lossDescription(best.loss_policy, lang)} />
+              <RuleBlock label={t("taxableRule")} value={taxableDescription(best, lang)} />
+            </div>
+          )}
+          <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-5">
+            <MiniStat label={t("annualSellAmount")} value={money(report?.annual_sell_amount_cny)} />
             <MiniStat label={t("proceeds")} value={money(best?.capital_proceeds_cny)} />
             <MiniStat label={t("cost")} value={money(best?.capital_cost_cny)} />
             <MiniStat label={t("foreignCredit")} value={money(best?.foreign_tax_credit_used_cny)} />
@@ -690,66 +1105,48 @@ export function CrsTax() {
               <span className="text-[var(--text-secondary)]">{t("taxFxDate")}</span>
               <span className="text-[var(--text-primary)]">{report?.tax_fx_rate_date ?? "—"}</span>
             </div>
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-[var(--text-secondary)]">{t("missingRates")}</span>
-              <span className={report?.missing_fx_rates.length ? "text-[var(--amber)]" : "text-[var(--green)]"}>
-                {report?.missing_fx_rates.length ?? 0}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-[var(--text-secondary)]">{t("missingCostLots")}</span>
-              <span className={report?.unmatched_cost_lots.length ? "text-[var(--amber)]" : "text-[var(--green)]"}>
-                {report?.unmatched_cost_lots.length ?? 0}
-              </span>
-            </div>
-            {!!report?.unmatched_cost_lots.length && (
+            {Object.entries(report?.tax_fx_rates ?? {}).length ? (
+              Object.entries(report?.tax_fx_rates ?? {}).map(([currency, rate]) => {
+                const usedDate = report?.tax_fx_rate_dates?.[currency];
+                const isEstimated = Boolean(report?.estimated_fx_rates?.includes(currency));
+                return (
+                <div key={currency} className="flex items-start justify-between gap-4">
+                  <span className="text-[var(--text-secondary)]">
+                    {currency}/CNY {t("fxRate")}
+                  </span>
+                  <span className="text-right text-[var(--text-primary)]">
+                    <span>{formatFxRate(rate)}</span>
+                    {isEstimated && usedDate ? (
+                      <span className="block text-[11px] text-[var(--amber)]">
+                        {t("estimatedFxRate")} {usedDate}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+                );
+              })
+            ) : (
               <div className="rounded-md border border-[var(--amber)]/30 bg-[var(--amber)]/10 p-2 text-[var(--amber)]">
-                {report.unmatched_cost_lots
-                  .map((item) => `${item.symbol} ${toNumber(item.quantity).toLocaleString()} sh`)
-                  .join(" · ")}
+                {t("noFxRate")}
               </div>
             )}
-            <label className="block rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[var(--text-secondary)]">
-              <span className="block pb-2 uppercase tracking-wider">{t("importFxCsv")}</span>
-              <input
-                type="file"
-                accept=".csv,.txt"
-                className="block w-full text-[11px]"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) {
-                    fxMutation.mutate(file);
-                  }
-                }}
-              />
-            </label>
-            <p className="text-[var(--text-secondary)]">
-              {fxMutation.isPending ? t("importing") : fxImportResult ?? t("fxSupported")}
-            </p>
-            <button
-              type="button"
-              onClick={() => fxFetchMutation.mutate()}
-              disabled={fxFetchMutation.isPending}
-              className="w-full rounded-md border border-[var(--green)]/40 bg-[var(--green)]/10 px-3 py-2 text-left font-mono text-xs text-[var(--green)] transition-colors hover:border-[var(--green)]/70 disabled:cursor-wait disabled:opacity-50"
-            >
-              {fxFetchMutation.isPending ? t("fetchingFx") : t("fetchOfficialFx")}
-            </button>
-            <p className="text-[var(--text-secondary)]">
-              {fxFetchResult ?? t("fxSource")}
+            <p className="border-t border-white/[0.06] pt-3 text-[var(--text-secondary)]">
+              {t("fxSource")}
             </p>
           </div>
         </GlassCard>
       </section>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <GlassCard className="p-4">
           <p className="font-heading text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
             {t("incomeSplit")}
           </p>
           <div className="mt-4 space-y-3">
             <SplitRow label={t("capitalTax")} value={money(best?.capital_tax_cny)} />
-            <SplitRow label={t("matchedSaleQty")} value={String(best?.matched_sale_quantity ?? 0)} />
-            <SplitRow label={t("unmatchedSaleQty")} value={String(best?.unmatched_sale_quantity ?? 0)} />
+            <SplitRow label={t("matchedSaleQty")} value={compactDecimal(best?.matched_sale_quantity)} />
+            <SplitRow label={t("unmatchedSaleQty")} value={compactDecimal(best?.unmatched_sale_quantity)} />
+            <SplitRow label={t("dividendIncome")} value={money(best?.dividend_income_cny)} />
             <SplitRow label={t("dividendTax")} value={money(best?.dividend_tax_cny)} />
             <SplitRow label={t("foreignTaxPaid")} value={money(best?.foreign_tax_paid_cny)} />
             <SplitRow label={t("netTaxDue")} value={money(best?.tax_due_cny)} accent />
@@ -757,13 +1154,24 @@ export function CrsTax() {
         </GlassCard>
         <GlassCard className="p-4">
           <p className="font-heading text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
+            {t("moneyMarketLens")}
+          </p>
+          <div className="mt-4 space-y-3">
+            <SplitRow label={t("moneyMarketSubscription")} value={money(report?.money_market?.subscription_cny)} />
+            <SplitRow label={t("moneyMarketRedemption")} value={money(report?.money_market?.redemption_cny)} />
+            <SplitRow label={t("moneyMarketNet")} value={money(report?.money_market?.net_cashflow_cny)} accent />
+            <SplitRow label={t("moneyMarketTransactions")} value={String(report?.money_market?.transaction_count ?? 0)} />
+          </div>
+        </GlassCard>
+        <GlassCard className="p-4">
+          <p className="font-heading text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-secondary)]">
             {t("economicFxLens")}
           </p>
           <div className="mt-4 space-y-3">
-            <SplitRow label={t("eventDateCashValue")} value={money(report?.economic_fx.event_date_cash_value_cny)} />
-            <SplitRow label={t("observableFxEffect")} value={money(report?.economic_fx.observable_fx_effect_cny)} />
-            <SplitRow label={t("observableCashFlows")} value={String(report?.economic_fx.observable_cash_flow_count ?? 0)} />
-            <SplitRow label={t("executionsMetric")} value={String(report?.raw_counts.executions ?? 0)} />
+            <SplitRow label={t("eventDateCashValue")} value={money(report?.economic_fx?.event_date_cash_value_cny)} />
+            <SplitRow label={t("observableFxEffect")} value={money(report?.economic_fx?.observable_fx_effect_cny)} />
+            <SplitRow label={t("observableCashFlows")} value={String(report?.economic_fx?.observable_cash_flow_count ?? 0)} />
+            <SplitRow label={t("executionsMetric")} value={String(report?.raw_counts?.executions ?? 0)} />
           </div>
         </GlassCard>
       </section>
@@ -808,7 +1216,7 @@ export function CrsTax() {
                       type="button"
                       onClick={() =>
                         navigate(
-                          `/crs-tax/cost-trace?year=${year}&filing_month=${filingMonth}&scheme_key=${encodeURIComponent(
+                          `/crs-tax/cost-trace?year=${year}&scheme_key=${encodeURIComponent(
                             scheme.scheme_key,
                           )}&lang=${lang}`,
                         )
@@ -863,6 +1271,40 @@ export function CrsTax() {
                 {rawKindLabel(item)}
               </button>
             ))}
+            <input
+              type="search"
+              value={rawSearch}
+              onChange={(event) => setRawSearch(event.target.value)}
+              placeholder={t("rawSearch")}
+              className="min-w-[240px] rounded-md border border-white/[0.08] bg-[#111118] px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-secondary)] hover:border-white/[0.16] focus:border-[var(--cyan)]/50"
+            />
+            {rawKind === "orders" && (
+              <>
+                <select
+                  value={String(rawOrderMonth)}
+                  onChange={(event) => setRawOrderMonth(event.target.value === "all" ? "all" : Number(event.target.value))}
+                  className="rounded-md border border-white/[0.08] bg-[#111118] px-3 py-2 font-mono text-xs text-[var(--text-primary)]"
+                  aria-label={t("filterMonth")}
+                >
+                  <option value="all">{t("filterMonth")}: {t("all")}</option>
+                  {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
+                    <option key={month} value={month}>
+                      {t("filterMonth")}: {month}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={rawOrderSide}
+                  onChange={(event) => setRawOrderSide(event.target.value)}
+                  className="rounded-md border border-white/[0.08] bg-[#111118] px-3 py-2 font-mono text-xs text-[var(--text-primary)]"
+                  aria-label={t("filterSide")}
+                >
+                  <option value="">{t("filterSide")}: {t("all")}</option>
+                  <option value="Buy">{t("filterSide")}: {rawValueLabels[lang].Buy}</option>
+                  <option value="Sell">{t("filterSide")}: {rawValueLabels[lang].Sell}</option>
+                </select>
+              </>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
             <select
@@ -914,21 +1356,44 @@ export function CrsTax() {
               <tr>
                 {rawKeys.map((key) => (
                   <th key={key} className="px-4 py-3 font-medium">
-                    {rawHeaderLabel(key)}
+                    {rawHeaderNode(key)}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rawItems.map((item, index) => (
-                <tr key={index} className="border-t border-white/[0.04]">
-                  {rawKeys.map((key) => (
-                    <td key={key} className="max-w-[220px] truncate px-4 py-3 text-[var(--text-secondary)]">
-                      {rawCellValue(key, item[key])}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {rawItems.map((item, index) => {
+                const rowId =
+                  rawKind === "executions"
+                    ? String(item.trade_id ?? item.order_id ?? index)
+                    : String(item.order_id ?? item.trade_id ?? index);
+                const rowKey = `${rawKind}-${rowId}`;
+                return (
+                  <Fragment key={rowKey}>
+                    <tr className="border-t border-white/[0.04]">
+                      {rawKeys.map((key) => (
+                        <td key={key} className="max-w-[220px] truncate px-4 py-3 text-[var(--text-secondary)]">
+                          {rawCellNode(key, item[key], rowKey, item)}
+                        </td>
+                      ))}
+                    </tr>
+                    {expandedRawLink?.key === rowKey && (
+                      <tr className="border-t border-white/[0.04] bg-white/[0.015]">
+                        <td colSpan={Math.max(rawKeys.length, 1)} className="px-4 py-3">
+                          <RelatedRawRows
+                            kind={expandedRawLink.relatedKind}
+                            items={relatedRawQuery.data?.items ?? []}
+                            loading={relatedRawQuery.isLoading}
+                            headerLabel={rawHeaderLabel}
+                            cellValue={rawCellValue}
+                            emptyText={t("noRawRows")}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
           {!rawItems.length && (
@@ -947,6 +1412,65 @@ function MiniStat({ label, value }: { label: string; value: string }) {
     <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-3">
       <p className="font-heading text-[10px] uppercase tracking-wider text-[var(--text-secondary)]">{label}</p>
       <p className="mt-2 truncate font-mono text-sm text-[var(--text-primary)]">{value}</p>
+    </div>
+  );
+}
+
+function RuleBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1 border-b border-white/[0.04] pb-3 last:border-b-0 last:pb-0">
+      <span className="text-[var(--text-primary)]">{label}</span>
+      <span className="text-[var(--text-secondary)]">{value}</span>
+    </div>
+  );
+}
+
+function RelatedRawRows({
+  kind,
+  items,
+  loading,
+  headerLabel,
+  cellValue,
+  emptyText,
+}: {
+  kind: RawKind;
+  items: Record<string, unknown>[];
+  loading: boolean;
+  headerLabel: (key: string) => string;
+  cellValue: (key: string, value: unknown, item?: Record<string, unknown>) => string;
+  emptyText: string;
+}) {
+  const keys = rawColumns[kind];
+  if (loading) {
+    return <p className="font-mono text-xs text-[var(--text-secondary)]">Loading...</p>;
+  }
+  if (!items.length) {
+    return <p className="font-mono text-xs text-[var(--text-secondary)]">{emptyText}</p>;
+  }
+  return (
+    <div className="overflow-auto rounded-md border border-white/[0.06] bg-black/[0.12]">
+      <table className="w-full min-w-[720px] text-left font-mono text-[11px]">
+        <thead className="text-[var(--text-secondary)]">
+          <tr>
+            {keys.map((key) => (
+              <th key={key} className="px-3 py-2 font-medium">
+                {headerLabel(key)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item, index) => (
+            <tr key={index} className="border-t border-white/[0.04]">
+              {keys.map((key) => (
+                <td key={key} className="max-w-[220px] truncate px-3 py-2 text-[var(--text-secondary)]">
+                  {cellValue(key, item[key], item)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

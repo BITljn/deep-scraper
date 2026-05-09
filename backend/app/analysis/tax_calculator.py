@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +37,7 @@ class SaleGain:
 @dataclass
 class Lot:
     quantity: Decimal
+    original_quantity: Decimal
     total_cost_cny: Decimal
     buy_time: datetime
     buy_order_id: str
@@ -78,20 +80,27 @@ def _country_from_symbol(symbol: str | None) -> str:
     return "UNKNOWN"
 
 
-def _prev_month_end(year: int, filing_month: int) -> date:
-    if filing_month == 1:
-        return date(year - 1, 12, 31)
-    return date(year, filing_month, 1).replace(day=1) - date.resolution
-
-
 def _as_utc_date(dt: datetime) -> date:
     if dt.tzinfo is None:
         return dt.date()
     return dt.astimezone(timezone.utc).date()
 
 
+def instrument_multiplier(symbol: str | None) -> Decimal:
+    if not symbol:
+        return Decimal("1")
+    upper = symbol.upper()
+    if re.search(r"[A-Z.]+\d{6}[CP]\d+\.US$", upper):
+        return Decimal("100")
+    return Decimal("1")
+
+
+def effective_execution_quantity(execution: TaxExecution) -> Decimal:
+    return execution.quantity * instrument_multiplier(execution.symbol)
+
+
 class FxBook:
-    def __init__(self, rows: list[TaxFxRate], max_stale_days: int = 7) -> None:
+    def __init__(self, rows: list[TaxFxRate], max_stale_days: int = 7, as_of: date | None = None) -> None:
         by_currency: dict[str, list[tuple[date, Decimal]]] = defaultdict(list)
         for row in rows:
             by_currency[row.currency.upper()].append((row.rate_date, row.cny_rate))
@@ -99,16 +108,33 @@ class FxBook:
             values.sort(key=lambda item: item[0])
         self._rates = by_currency
         self.missing: set[str] = set()
+        self.estimated: set[str] = set()
+        self.used_dates: dict[str, date] = {}
         self._max_stale_days = max_stale_days
+        self._as_of = as_of or date.today()
 
     def rate(self, currency: str | None, on_date: date) -> Decimal:
         cur = (currency or "CNY").upper()
         if cur in {"", "CNY", "CNH"}:
             return Decimal("1")
+        key = f"{cur}@{on_date.isoformat()}"
         values = self._rates.get(cur)
         if not values:
-            self.missing.add(f"{cur}@{on_date.isoformat()}")
+            self.missing.add(key)
             return ZERO
+        if on_date > self._as_of and on_date.month == 12 and on_date.day == 31:
+            exact = next((rate for rate_date, rate in values if rate_date == on_date), None)
+            if exact is not None:
+                self.used_dates[key] = on_date
+                return exact
+            previous_year_end = date(on_date.year - 1, 12, 31)
+            previous = next((rate for rate_date, rate in values if rate_date == previous_year_end), None)
+            if previous is None:
+                self.missing.add(key)
+                return ZERO
+            self.estimated.add(key)
+            self.used_dates[key] = previous_year_end
+            return previous
         best = None
         best_date = None
         for rate_date, rate in values:
@@ -117,11 +143,14 @@ class FxBook:
             best = rate
             best_date = rate_date
         if best is None:
-            self.missing.add(f"{cur}@{on_date.isoformat()}")
+            self.missing.add(key)
             return ZERO
         if best_date is None or (on_date - best_date).days > self._max_stale_days:
-            self.missing.add(f"{cur}@{on_date.isoformat()}")
-            return ZERO
+            if on_date <= self._as_of:
+                self.missing.add(key)
+                return ZERO
+            self.estimated.add(key)
+        self.used_dates[key] = best_date
         return best
 
 
@@ -147,20 +176,23 @@ async def build_tax_report(
         for fee in fee_rows:
             fees_by_order[fee.order_id] += abs(_dec(fee.amount))
 
-    cashflows = (
-        await db.execute(select(TaxCashFlow).where(TaxCashFlow.business_time >= start, TaxCashFlow.business_time < end))
-    ).scalars().all()
+    cashflows = _dedupe_cashflows(
+        (
+            await db.execute(select(TaxCashFlow).where(TaxCashFlow.business_time >= start, TaxCashFlow.business_time < end))
+        ).scalars().all()
+    )
     fx_rows = (await db.execute(select(TaxFxRate))).scalars().all()
     fx = FxBook(list(fx_rows))
 
-    tax_rate_date = _prev_month_end(year + 1, filing_month)
+    tax_rate_date = date(year, 12, 31)
     schemes = []
-    for cost_method in ["fifo", "weighted_average", "highest_cost"]:
+    for cost_method in ["fifo", "lifo", "weighted_average", "highest_cost"]:
         sales = _calculate_sales(executions, orders, fees_by_order, fx, year, cost_method, tax_rate_date)
         for loss_policy in ["per_sale", "symbol_net", "portfolio_net"]:
             schemes.append(_scheme_from_sales(cost_method, loss_policy, sales))
 
     dividends = _calculate_dividends(cashflows, fx, tax_rate_date)
+    money_market = _calculate_money_market_cashflows(cashflows, fx, tax_rate_date)
     for scheme in schemes:
         gross_tax = _dec(scheme["capital_tax_cny"]) + dividends["dividend_tax_cny"]
         credit_used = min(dividends["foreign_tax_paid_cny"], gross_tax)
@@ -173,21 +205,52 @@ async def build_tax_report(
     explainable = [item for item in schemes if item["is_explainable"]]
     best = min(explainable or schemes, key=lambda item: _dec(item["tax_due_cny"]), default=None)
     economic = _calculate_economic_cashflows(cashflows, fx, tax_rate_date)
+    annual_sell_amount_cny = _calculate_annual_sell_amount(executions, orders, fx, year, tax_rate_date)
+    position_quantities = _calculate_position_quantities(executions, orders, year)
+    current_position_quantities = _calculate_position_quantities(executions, orders, None)
+    tax_currencies = {
+        currency.upper()
+        for currency in [
+            *(order.currency for order in orders.values()),
+            *(flow.currency for flow in cashflows),
+        ]
+        if currency and currency.upper() not in {"CNY", "CNH"}
+    }
+    tax_fx_rates = {}
+    tax_fx_rate_dates = {}
+    estimated_tax_fx_rates = []
+    for currency in sorted(tax_currencies):
+        rate = fx.rate(currency, tax_rate_date)
+        if rate != ZERO:
+            tax_fx_rates[currency] = str(_q(rate))
+            key = f"{currency}@{tax_rate_date.isoformat()}"
+            used_date = fx.used_dates.get(key)
+            if used_date:
+                tax_fx_rate_dates[currency] = used_date.isoformat()
+            if key in fx.estimated:
+                estimated_tax_fx_rates.append(currency)
 
     unmatched_lots = _collect_unmatched_lots(schemes)
-    status = "complete" if not fx.missing and not unmatched_lots else "incomplete"
+    status = "complete" if not fx.missing and not fx.estimated and not unmatched_lots else "incomplete"
     return {
         "year": year,
         "filing_month": filing_month,
         "status": status,
         "tax_rate": str(TAX_RATE),
         "tax_fx_rate_date": tax_rate_date.isoformat(),
+        "tax_fx_rates": tax_fx_rates,
+        "tax_fx_rate_dates": tax_fx_rate_dates,
+        "estimated_fx_rates": sorted(estimated_tax_fx_rates),
+        "annual_sell_amount_cny": str(_q(annual_sell_amount_cny)),
+        "position_quantities": {symbol: str(_q(quantity)) for symbol, quantity in position_quantities.items()},
+        "current_position_quantities": {symbol: str(_q(quantity)) for symbol, quantity in current_position_quantities.items()},
         "missing_fx_rates": sorted(fx.missing)[:200],
         "unmatched_cost_lots": unmatched_lots,
         "best_scheme_key": best["scheme_key"] if best else None,
         "best_scheme": best,
         "schemes": schemes,
         "dividends": {k: str(_q(v)) if isinstance(v, Decimal) else v for k, v in dividends.items()},
+        "money_market": {k: str(_q(v)) if isinstance(v, Decimal) else v for k, v in money_market.items()},
         "economic_fx": {k: str(_q(v)) if isinstance(v, Decimal) else v for k, v in economic.items()},
         "raw_counts": {
             "executions": len([e for e in executions if start <= e.trade_done_at < end]),
@@ -240,26 +303,28 @@ def _calculate_sales(
         currency = (order.currency if order else None) or "USD"
         rate = fx.rate(currency, tax_rate_date)
         fee_cny = _execution_fee_cny(execution, order, fees_by_order, fx, tax_rate_date)
-        gross_cny = execution.price * execution.quantity * rate
+        effective_quantity = effective_execution_quantity(execution)
+        gross_cny = execution.price * effective_quantity * rate
 
         if "buy" in side:
             total_cost = gross_cny + fee_cny
+            lot = Lot(
+                quantity=effective_quantity,
+                original_quantity=effective_quantity,
+                total_cost_cny=total_cost,
+                buy_time=execution.trade_done_at,
+                buy_order_id=execution.order_id,
+                buy_trade_id=execution.trade_id,
+                buy_price=execution.price,
+                buy_currency=currency,
+                buy_fee_cny=fee_cny,
+            )
             if cost_method == "weighted_average":
-                weighted_qty[execution.symbol] += execution.quantity
+                weighted_qty[execution.symbol] += effective_quantity
                 weighted_cost[execution.symbol] += total_cost
+                lots[execution.symbol].append(lot)
             else:
-                lots[execution.symbol].append(
-                    Lot(
-                        quantity=execution.quantity,
-                        total_cost_cny=total_cost,
-                        buy_time=execution.trade_done_at,
-                        buy_order_id=execution.order_id,
-                        buy_trade_id=execution.trade_id,
-                        buy_price=execution.price,
-                        buy_currency=currency,
-                        buy_fee_cny=fee_cny,
-                    )
-                )
+                lots[execution.symbol].append(lot)
             continue
 
         if "sell" not in side:
@@ -268,15 +333,22 @@ def _calculate_sales(
         proceeds_cny = gross_cny - fee_cny
         matches: list[dict] = []
         if cost_method == "weighted_average":
-            cost_cny, matched_quantity = _consume_weighted(execution.symbol, execution.quantity, weighted_qty, weighted_cost)
+            cost_cny, matched_quantity, matches = _consume_weighted(
+                execution.symbol,
+                effective_quantity,
+                weighted_qty,
+                weighted_cost,
+                lots[execution.symbol],
+            )
         else:
             cost_cny, matched_quantity, matches = _consume_lots(
                 lots[execution.symbol],
-                execution.quantity,
+                effective_quantity,
                 highest_cost=cost_method == "highest_cost",
+                lifo=cost_method == "lifo",
             )
         if start <= execution.trade_done_at < end:
-            matched_ratio = matched_quantity / execution.quantity if execution.quantity > 0 else ZERO
+            matched_ratio = matched_quantity / effective_quantity if effective_quantity > 0 else ZERO
             matched_proceeds = proceeds_cny * matched_ratio
             matched_fee = fee_cny * matched_ratio
             sales.append(
@@ -291,13 +363,55 @@ def _calculate_sales(
                     proceeds_cny=matched_proceeds,
                     cost_cny=cost_cny,
                     fee_cny=matched_fee,
-                    quantity=execution.quantity,
+                    quantity=effective_quantity,
                     matched_quantity=matched_quantity,
-                    unmatched_quantity=max(ZERO, execution.quantity - matched_quantity),
+                    unmatched_quantity=max(ZERO, effective_quantity - matched_quantity),
                     matches=matches,
                 )
             )
     return sales
+
+
+def _calculate_annual_sell_amount(
+    executions: list[TaxExecution],
+    orders: dict[str, TaxOrder],
+    fx: FxBook,
+    year: int,
+    tax_rate_date: date,
+) -> Decimal:
+    start = datetime(year, 1, 1, tzinfo=timezone.utc)
+    end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    total = ZERO
+    for execution in executions:
+        if not (start <= execution.trade_done_at < end):
+            continue
+        order = orders.get(execution.order_id)
+        side = _enum_value(order.side if order else execution.raw.get("side") if execution.raw else "").lower()
+        if "sell" not in side:
+            continue
+        currency = (order.currency if order else None) or "USD"
+        total += execution.price * effective_execution_quantity(execution) * fx.rate(currency, tax_rate_date)
+    return total
+
+
+def _calculate_position_quantities(
+    executions: list[TaxExecution],
+    orders: dict[str, TaxOrder],
+    year: int | None,
+) -> dict[str, Decimal]:
+    end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) if year is not None else None
+    positions: dict[str, Decimal] = defaultdict(Decimal)
+    for execution in executions:
+        if end is not None and execution.trade_done_at >= end:
+            continue
+        order = orders.get(execution.order_id)
+        side = _enum_value(order.side if order else execution.raw.get("side") if execution.raw else "").lower()
+        quantity = effective_execution_quantity(execution)
+        if "buy" in side:
+            positions[execution.symbol] += quantity
+        elif "sell" in side:
+            positions[execution.symbol] -= quantity
+    return {symbol: quantity for symbol, quantity in positions.items() if abs(quantity) > Decimal("0.000001")}
 
 
 def _consume_weighted(
@@ -305,18 +419,21 @@ def _consume_weighted(
     quantity: Decimal,
     weighted_qty: dict[str, Decimal],
     weighted_cost: dict[str, Decimal],
-) -> tuple[Decimal, Decimal]:
+    lots: deque[Lot],
+) -> tuple[Decimal, Decimal, list[dict]]:
     qty = weighted_qty[symbol]
     if qty <= 0:
-        return ZERO, ZERO
+        return ZERO, ZERO, []
     sell_qty = min(quantity, qty)
+    unit = weighted_cost[symbol] / qty
     cost = weighted_cost[symbol] * sell_qty / qty
+    matches = _consume_trace_lots(lots, sell_qty, unit)
     weighted_qty[symbol] -= sell_qty
     weighted_cost[symbol] -= cost
-    return cost, sell_qty
+    return cost, sell_qty, matches
 
 
-def _consume_lots(lots: deque[Lot], quantity: Decimal, highest_cost: bool) -> tuple[Decimal, Decimal, list[dict]]:
+def _consume_lots(lots: deque[Lot], quantity: Decimal, highest_cost: bool, lifo: bool) -> tuple[Decimal, Decimal, list[dict]]:
     remaining = quantity
     cost = ZERO
     matched = ZERO
@@ -326,31 +443,55 @@ def _consume_lots(lots: deque[Lot], quantity: Decimal, highest_cost: bool) -> tu
         lots.clear()
         lots.extend(ordered)
     while remaining > 0 and lots:
-        lot = lots[0]
+        lot = lots[-1] if lifo else lots[0]
         take = min(remaining, lot.quantity)
         unit = lot.unit_cost
         match_cost = take * unit
         cost += match_cost
         matched += take
-        matches.append(
-            {
-                "buy_time": lot.buy_time.isoformat(),
-                "buy_order_id": lot.buy_order_id,
-                "buy_trade_id": lot.buy_trade_id,
-                "buy_price": str(lot.buy_price),
-                "buy_currency": lot.buy_currency,
-                "matched_quantity": str(take),
-                "unit_cost_cny": str(_q(unit)),
-                "matched_cost_cny": str(_q(match_cost)),
-                "buy_fee_cny": str(_q(lot.buy_fee_cny)),
-            }
-        )
+        matches.append(_match_from_lot(lot, take, unit))
         lot.quantity -= take
         lot.total_cost_cny -= match_cost
         remaining -= take
         if lot.quantity <= 0:
-            lots.popleft()
+            if lifo:
+                lots.pop()
+            else:
+                lots.popleft()
     return cost, matched, matches
+
+
+def _consume_trace_lots(lots: deque[Lot], quantity: Decimal, unit_cost_cny: Decimal) -> list[dict]:
+    remaining = quantity
+    matches: list[dict] = []
+    while remaining > 0 and lots:
+        lot = lots[0]
+        take = min(remaining, lot.quantity)
+        matches.append(_match_from_lot(lot, take, unit_cost_cny))
+        lot.quantity -= take
+        remaining -= take
+        if lot.quantity <= 0:
+            lots.popleft()
+    return matches
+
+
+def _match_from_lot(lot: Lot, take: Decimal, unit_cost_cny: Decimal) -> dict:
+    match_cost = take * unit_cost_cny
+    buy_remaining_quantity = lot.quantity - take
+    buy_fee_cny = lot.buy_fee_cny * take / lot.original_quantity if lot.original_quantity > 0 else ZERO
+    return {
+        "buy_time": lot.buy_time.isoformat(),
+        "buy_order_id": lot.buy_order_id,
+        "buy_trade_id": lot.buy_trade_id,
+        "buy_price": str(lot.buy_price),
+        "buy_currency": lot.buy_currency,
+        "buy_quantity": str(lot.original_quantity),
+        "buy_remaining_quantity": str(buy_remaining_quantity),
+        "matched_quantity": str(take),
+        "unit_cost_cny": str(_q(unit_cost_cny)),
+        "matched_cost_cny": str(_q(match_cost)),
+        "buy_fee_cny": str(_q(buy_fee_cny)),
+    }
 
 
 def _scheme_from_sales(cost_method: str, loss_policy: str, sales: list[SaleGain]) -> dict:
@@ -425,6 +566,25 @@ def _collect_unmatched_lots(schemes: list[dict]) -> list[dict]:
     return []
 
 
+def _dedupe_cashflows(cashflows: list[TaxCashFlow]) -> list[TaxCashFlow]:
+    seen = set()
+    out = []
+    for flow in cashflows:
+        key = (
+            flow.business_time,
+            flow.transaction_flow_name,
+            flow.balance,
+            flow.currency,
+            flow.symbol or "",
+            flow.description or "",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(flow)
+    return out
+
+
 def _cashflow_signed_amount(flow: TaxCashFlow) -> Decimal:
     amount = _dec(flow.balance)
     direction = str(flow.direction or "").lower()
@@ -441,22 +601,47 @@ def _calculate_dividends(cashflows: list[TaxCashFlow], fx: FxBook, tax_rate_date
     by_country: dict[str, Decimal] = defaultdict(Decimal)
     for flow in cashflows:
         label = f"{flow.transaction_flow_name} {flow.description or ''}".lower()
-        amount = _cashflow_signed_amount(flow)
-        amount_cny = abs(amount) * fx.rate(flow.currency, tax_rate_date)
-        if any(token in label for token in ["dividend", "股息", "分红", "派息"]):
-            if amount > 0:
-                dividend_income += amount_cny
-                by_country[_country_from_symbol(flow.symbol)] += amount_cny
-            elif any(token in label for token in ["tax", "withholding", "withheld", "税", "预扣"]):
-                foreign_tax_paid += amount_cny
-        elif any(token in label for token in ["withholding tax", "dividend tax", "股息税", "预扣税"]):
+        if not any(token in label for token in ["dividend", "股息", "分红", "派息"]):
+            continue
+        amount_cny = abs(_dec(flow.balance)) * fx.rate(flow.currency, tax_rate_date)
+        is_exempt = "withholding exempt" in label or "预扣豁免" in label
+        is_tax = not is_exempt and any(token in label for token in ["withholding tax", "dividend tax", "withheld", "股息税", "预扣税"])
+        if is_tax:
             foreign_tax_paid += amount_cny
+        else:
+            dividend_income += amount_cny
+            by_country[_country_from_symbol(flow.symbol)] += amount_cny
 
     return {
         "dividend_income_cny": dividend_income,
         "dividend_tax_cny": dividend_income * TAX_RATE,
         "foreign_tax_paid_cny": foreign_tax_paid,
         "dividend_income_by_country": {k: str(_q(v)) for k, v in sorted(by_country.items())},
+    }
+
+
+def _calculate_money_market_cashflows(cashflows: list[TaxCashFlow], fx: FxBook, tax_rate_date: date) -> dict[str, Decimal | int]:
+    subscription = ZERO
+    redemption = ZERO
+    count = 0
+    for flow in cashflows:
+        label = f"{flow.transaction_flow_name} {flow.description or ''}".lower()
+        if not any(token in label for token in ["money mkt", "money market", "unit trust", "货币基金"]):
+            continue
+        amount_cny = abs(_dec(flow.balance)) * fx.rate(flow.currency, tax_rate_date)
+        name = flow.transaction_flow_name.lower()
+        if any(token in name for token in ["placement", "buy contract", "subscription", "申购", "买入"]):
+            subscription += amount_cny
+        elif any(token in name for token in ["redemption", "sell contract", "赎回", "卖出"]):
+            redemption += amount_cny
+        else:
+            continue
+        count += 1
+    return {
+        "subscription_cny": subscription,
+        "redemption_cny": redemption,
+        "net_cashflow_cny": redemption - subscription,
+        "transaction_count": count,
     }
 
 

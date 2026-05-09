@@ -1,7 +1,7 @@
 import { client } from "./client";
 import type { TaxRawResponse, TaxReport } from "./types";
 
-export async function fetchTaxReport(year: number, filingMonth: number): Promise<TaxReport> {
+export async function fetchTaxReport(year: number, filingMonth = 6): Promise<TaxReport> {
   const { data } = await client.get<TaxReport>("/tax/report", {
     params: { year, filing_month: filingMonth },
   });
@@ -17,9 +17,27 @@ export async function triggerTaxCollect(input: {
   return data;
 }
 
-export async function fetchTaxRaw(kind: string, limit = 20, year?: number, offset = 0): Promise<TaxRawResponse> {
+export async function fetchTaxRaw(
+  kind: string,
+  limit = 20,
+  year?: number,
+  offset = 0,
+  search?: string,
+  month?: number | "all",
+  side?: string,
+  tradeTimeOrder?: "asc" | "desc",
+): Promise<TaxRawResponse> {
   const { data } = await client.get<TaxRawResponse>("/tax/raw", {
-    params: { kind, limit, year, offset },
+    params: {
+      kind,
+      limit,
+      year,
+      offset,
+      search: search || undefined,
+      month: month === "all" ? undefined : month,
+      side: side || undefined,
+      trade_time_order: tradeTimeOrder,
+    },
   });
   return data;
 }

@@ -29,7 +29,7 @@ function getInitialTheme(): ThemeMode {
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-export function NavBar() {
+export function NavBar({ onLogout, userLabel }: { onLogout?: () => void; userLabel?: string }) {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const isLight = theme === "light";
 
@@ -73,7 +73,17 @@ export function NavBar() {
           </NavLink>
         ))}
       </nav>
-      <div className="border-t border-[var(--border-subtle)] px-2 py-3">
+      <div className="space-y-1 border-t border-[var(--border-subtle)] px-2 py-3">
+        {userLabel && (
+          <div className="flex items-center gap-3 rounded-md px-2 py-2 text-left text-sm text-[var(--text-secondary)]">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border-subtle)] font-mono text-[11px] text-[var(--green)]">
+              U
+            </span>
+            <span className="whitespace-nowrap opacity-0 transition-opacity duration-200 group-hover/nav:opacity-100">
+              {userLabel}
+            </span>
+          </div>
+        )}
         <button
           type="button"
           className="flex w-full items-center gap-3 rounded-md border-l-2 border-transparent px-2 py-2 text-left text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
@@ -88,6 +98,22 @@ export function NavBar() {
             {isLight ? "Day mode" : "Night mode"}
           </span>
         </button>
+        {onLogout && (
+          <button
+            type="button"
+            className="flex w-full items-center gap-3 rounded-md border-l-2 border-transparent px-2 py-2 text-left text-sm text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+            title="Logout"
+            aria-label="Logout"
+            onClick={onLogout}
+          >
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border-subtle)] font-mono text-[11px] text-[var(--red)]">
+              ×
+            </span>
+            <span className="whitespace-nowrap opacity-0 transition-opacity duration-200 group-hover/nav:opacity-100">
+              Logout
+            </span>
+          </button>
+        )}
       </div>
     </aside>
   );

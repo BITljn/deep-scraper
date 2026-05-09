@@ -4,9 +4,11 @@ import { StatusBar } from "./StatusBar";
 
 export interface AppShellProps {
   children: ReactNode;
+  onLogout?: () => void;
+  userLabel?: string;
 }
 
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children, onLogout, userLabel }: AppShellProps) {
   return (
     <div className="flex min-h-screen flex-col bg-[var(--bg-primary)]">
       <div
@@ -16,7 +18,7 @@ export function AppShell({ children }: AppShellProps) {
         }}
       />
       <div className="flex min-h-0 min-h-screen flex-1">
-        <NavBar />
+        <NavBar onLogout={onLogout} userLabel={userLabel} />
         <main className="min-h-0 flex-1 overflow-auto p-6 pb-10">{children}</main>
       </div>
       <StatusBar />

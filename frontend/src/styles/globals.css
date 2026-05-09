@@ -125,6 +125,100 @@ button {
   color-scheme: inherit;
 }
 
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  :root,
+  :root[data-theme="dark"],
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg-primary: #ffffff;
+    --bg-surface: #ffffff;
+    --border-subtle: #d9dee8;
+    --cyan: #005f73;
+    --green: #006b3f;
+    --red: #b42345;
+    --amber: #8a5200;
+    --text-primary: #111827;
+    --text-secondary: #4b5563;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    background-image: none !important;
+    color: #111827 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .cost-trace-print {
+    max-width: none !important;
+    width: 100% !important;
+    padding: 0 !important;
+    color: #111827 !important;
+  }
+
+  .cost-trace-print header {
+    border-bottom: 1px solid #d9dee8;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+  }
+
+  .cost-trace-print .glass-card,
+  .cost-trace-print [class~="glass-card"] {
+    background: #ffffff !important;
+    border: 1px solid #d9dee8 !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .cost-trace-print .print-sale-block {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    padding: 10px 0 !important;
+  }
+
+  .cost-trace-print .overflow-auto {
+    overflow: visible !important;
+  }
+
+  .cost-trace-print table {
+    min-width: 0 !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+    font-size: 9px !important;
+    line-height: 1.35 !important;
+  }
+
+  .cost-trace-print tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .cost-trace-print td,
+  .cost-trace-print th {
+    border-top: 1px solid #e5e7eb !important;
+    padding: 4px 5px !important;
+    color: #111827 !important;
+    vertical-align: top !important;
+  }
+
+  .cost-trace-print [class*="bg-white/"],
+  .cost-trace-print [class*="bg-black/"] {
+    background: #ffffff !important;
+  }
+}
+
 :root[data-theme="light"] [class~="bg-white/[0.02]"],
 :root[data-theme="light"] [class~="bg-white/[0.025]"],
 :root[data-theme="light"] [class~="bg-white/[0.03]"],

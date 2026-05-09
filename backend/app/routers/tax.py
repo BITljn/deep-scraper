@@ -11,11 +11,11 @@ from decimal import Decimal
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.analysis.tax_calculator import build_tax_report
+from app.analysis.tax_calculator import FxBook, _dedupe_cashflows, build_tax_report, effective_execution_quantity
 from app.analysis.fx_rates import fetch_and_store_fx_rates
 from app.collectors.tax_collector import TaxCollector
 from app.config import get_settings
@@ -179,21 +179,39 @@ async def fetch_fx_rates(
 
 @router.get("/raw")
 async def list_raw_tax_rows(
-    kind: str = Query("executions", pattern="^(executions|orders|cashflows|fx)$"),
+    kind: str = Query("executions", pattern="^(executions|orders|cashflows|dividends|fx)$"),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     year: int | None = Query(None, ge=2000, le=2100),
+    search: str | None = Query(None, max_length=128),
+    month: int | None = Query(None, ge=1, le=12),
+    side: str | None = Query(None, pattern="^(Buy|Sell)$"),
+    trade_time_order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> dict:
     start = datetime(year, 1, 1, tzinfo=timezone.utc) if year else None
     end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) if year else None
+    search_text = search.strip() if search else ""
     if kind == "executions":
         stmt = select(TaxExecution)
         if start and end:
             stmt = stmt.where(TaxExecution.trade_done_at >= start, TaxExecution.trade_done_at < end)
+        if side:
+            stmt = stmt.outerjoin(TaxOrder, TaxOrder.order_id == TaxExecution.order_id).where(
+                or_(TaxOrder.side == side, TaxExecution.raw["side"].as_string() == side)
+            )
+        if search_text:
+            pattern = f"%{search_text}%"
+            stmt = stmt.where(or_(TaxExecution.order_id.ilike(pattern), TaxExecution.trade_id.ilike(pattern)))
         total = await _raw_count(db, stmt)
-        rows = (await db.execute(stmt.order_by(TaxExecution.trade_done_at.desc()).offset(offset).limit(limit))).scalars().all()
-        return _raw_response(kind, year, limit, offset, total, [_execution_out(row) for row in rows])
+        trade_time_sort = TaxExecution.trade_done_at.asc() if trade_time_order == "asc" else TaxExecution.trade_done_at.desc()
+        rows = (await db.execute(stmt.order_by(trade_time_sort).offset(offset).limit(limit))).scalars().all()
+        order_ids = {row.order_id for row in rows}
+        orders_by_id = {}
+        if order_ids:
+            order_rows = (await db.execute(select(TaxOrder).where(TaxOrder.order_id.in_(order_ids)))).scalars().all()
+            orders_by_id = {row.order_id: row for row in order_rows}
+        return _raw_response(kind, year, limit, offset, total, [_execution_out(row, orders_by_id.get(row.order_id)) for row in rows])
     if kind == "orders":
         stmt = select(TaxOrder).where(
             TaxOrder.executed_quantity > 0,
@@ -201,16 +219,50 @@ async def list_raw_tax_rows(
         )
         if start and end:
             stmt = stmt.where(TaxOrder.submitted_at >= start, TaxOrder.submitted_at < end)
+        if month and year:
+            month_start = datetime(year, month, 1, tzinfo=timezone.utc)
+            month_end = datetime(year + 1, 1, 1, tzinfo=timezone.utc) if month == 12 else datetime(year, month + 1, 1, tzinfo=timezone.utc)
+            stmt = stmt.where(TaxOrder.submitted_at >= month_start, TaxOrder.submitted_at < month_end)
+        if side:
+            stmt = stmt.where(TaxOrder.side == side)
+        if search_text:
+            stmt = stmt.where(TaxOrder.order_id.ilike(f"%{search_text}%"))
         total = await _raw_count(db, stmt)
         rows = (await db.execute(stmt.order_by(TaxOrder.submitted_at.desc().nullslast()).offset(offset).limit(limit))).scalars().all()
-        return _raw_response(kind, year, limit, offset, total, [_order_out(row) for row in rows])
+        order_ids = {row.order_id for row in rows}
+        trade_counts = {}
+        if order_ids:
+            count_rows = (
+                await db.execute(
+                    select(TaxExecution.order_id, func.count(TaxExecution.trade_id))
+                    .where(TaxExecution.order_id.in_(order_ids))
+                    .group_by(TaxExecution.order_id)
+                )
+            ).all()
+            trade_counts = {order_id: int(count) for order_id, count in count_rows}
+        return _raw_response(kind, year, limit, offset, total, [_order_out(row, trade_counts.get(row.order_id, 0)) for row in rows])
     if kind == "cashflows":
         stmt = select(TaxCashFlow)
         if start and end:
             stmt = stmt.where(TaxCashFlow.business_time >= start, TaxCashFlow.business_time < end)
+        if search_text:
+            pattern = f"%{search_text}%"
+            stmt = stmt.where(or_(TaxCashFlow.description.ilike(pattern), TaxCashFlow.transaction_flow_name.ilike(pattern)))
         total = await _raw_count(db, stmt)
         rows = (await db.execute(stmt.order_by(TaxCashFlow.business_time.desc()).offset(offset).limit(limit))).scalars().all()
         return _raw_response(kind, year, limit, offset, total, [_cashflow_out(row) for row in rows])
+    if kind == "dividends":
+        stmt = select(TaxCashFlow)
+        if start and end:
+            stmt = stmt.where(TaxCashFlow.business_time >= start, TaxCashFlow.business_time < end)
+        if search_text:
+            pattern = f"%{search_text}%"
+            stmt = stmt.where(or_(TaxCashFlow.description.ilike(pattern), TaxCashFlow.transaction_flow_name.ilike(pattern)))
+        cashflows = _dedupe_cashflows((await db.execute(stmt.order_by(TaxCashFlow.business_time.desc()))).scalars().all())
+        fx_rows = (await db.execute(select(TaxFxRate))).scalars().all()
+        rows = _dividend_raw_rows(cashflows, FxBook(list(fx_rows)), date(year, 12, 31) if year else date.today())
+        total = len(rows)
+        return _raw_response(kind, year, limit, offset, total, rows[offset : offset + limit])
     stmt = select(TaxFxRate)
     if year:
         stmt = stmt.where(TaxFxRate.rate_date >= date(year, 1, 1), TaxFxRate.rate_date < date(year + 1, 1, 1))
@@ -318,23 +370,31 @@ def _rate_from_text(value: str) -> Decimal | None:
     return rate
 
 
-def _execution_out(row: TaxExecution) -> dict:
+def _execution_out(row: TaxExecution, order: TaxOrder | None = None) -> dict:
+    currency = order.currency if order else (row.raw or {}).get("currency")
     return {
+        "order_id": row.order_id,
+        "trade_id": row.trade_id,
         "symbol": row.symbol,
+        "side": order.side if order else (row.raw or {}).get("side"),
         "trade_done_at": row.trade_done_at,
         "price": row.price,
         "quantity": row.quantity,
+        "total_amount": row.price * effective_execution_quantity(row),
+        "currency": currency,
     }
 
 
-def _order_out(row: TaxOrder) -> dict:
+def _order_out(row: TaxOrder, trade_count: int = 0) -> dict:
     return {
+        "order_id": row.order_id,
         "symbol": row.symbol,
         "side": row.side,
         "status": row.status,
         "currency": row.currency,
         "executed_price": row.executed_price,
         "executed_quantity": row.executed_quantity,
+        "trade_count": trade_count,
         "submitted_at": row.submitted_at,
         "updated_at": row.updated_at,
     }
@@ -351,6 +411,43 @@ def _cashflow_out(row: TaxCashFlow) -> dict:
         "symbol": row.symbol,
         "description": row.description,
     }
+
+
+def _dividend_raw_rows(cashflows: list[TaxCashFlow], fx: FxBook, tax_rate_date: date) -> list[dict]:
+    rows = []
+    for row in _dedupe_cashflows(cashflows):
+        label = f"{row.transaction_flow_name} {row.description or ''}".lower()
+        if not any(token in label for token in ["dividend", "股息", "分红", "派息"]):
+            continue
+        is_exempt = "withholding exempt" in label or "预扣豁免" in label
+        is_tax = not is_exempt and any(token in label for token in ["withholding tax", "dividend tax", "withheld", "股息税", "预扣税"])
+        amount = Decimal(str(row.balance))
+        amount_cny = abs(amount) * fx.rate(row.currency, tax_rate_date)
+        rows.append(
+            {
+                "business_time": row.business_time,
+                "symbol": _symbol_from_dividend_description(row.description) or row.symbol or "",
+                "kind": "tax" if is_tax else "income",
+                "amount": str(amount),
+                "currency": row.currency,
+                "cny_amount": str(amount_cny.quantize(Decimal("0.01"))),
+                "transaction_flow_name": row.transaction_flow_name,
+                "description": row.description,
+            }
+        )
+    rows.sort(key=lambda item: item["business_time"], reverse=True)
+    return rows
+
+
+def _symbol_from_dividend_description(description: str | None) -> str:
+    text = description or ""
+    match = re.search(r"\b([A-Z0-9.]+(?:\.[A-Z]{2})?)\s+(?:Cash Dividend|Payment in Lieu of Dividend)", text)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b([A-Z0-9.]+)\([^)]*\)\s+Payment in Lieu of Dividend", text)
+    if match:
+        return match.group(1)
+    return ""
 
 
 def _fx_out(row: TaxFxRate) -> dict:

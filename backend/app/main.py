@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
 from app.logging_config import setup_logging
-from app.routers import ark, brk, collect, hh, macro, mega7, pelosi, quotes, tax, vix, whales_13f
+from app.routers import ark, auth, brk, collect, hh, macro, mega7, pelosi, quotes, tax, vix, whales_13f
 from app.scheduler import start_scheduler, stop_scheduler
 
 setup_logging()
@@ -30,6 +30,7 @@ app.add_middleware(
 )
 
 app.include_router(quotes.router)
+app.include_router(auth.router)
 app.include_router(vix.router)
 app.include_router(collect.router)
 app.include_router(ark.router)
