@@ -330,7 +330,7 @@ def sdk_config():
     access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN", "")
     if not app_key or not app_secret or not access_token:
         raise RuntimeError("Missing LONGBRIDGE_APP_KEY/LONGBRIDGE_APP_SECRET/LONGBRIDGE_ACCESS_TOKEN in backend/.env")
-    return Config(app_key=app_key, app_secret=app_secret, access_token=access_token)
+    return Config.from_apikey(app_key=app_key, app_secret=app_secret, access_token=access_token)
 
 
 def fetch(args: argparse.Namespace) -> None:

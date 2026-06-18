@@ -41,6 +41,14 @@ function normalizeSchemeKey(value: string | null): string {
   return (value ?? defaultSchemeKey).replace(":symbol_net", ":portfolio_net");
 }
 
+function formatCollectError(message: string | null | undefined, tokenInvalidHint: string): string | null {
+  if (!message) return null;
+  if (message.includes("401004") || message.toLowerCase().includes("token invalid")) {
+    return tokenInvalidHint + " (" + message + ")";
+  }
+  return message;
+}
+
 type CopyKey =
   | "title"
   | "subtitle"
@@ -50,6 +58,8 @@ type CopyKey =
   | "collectRefreshing"
   | "collectComplete"
   | "collectFailed"
+  | "collectErrorTitle"
+  | "collectTokenInvalidHint"
   | "recommendedTaxDue"
   | "capitalTaxableGain"
   | "dividendIncome"
@@ -155,6 +165,8 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     collectRefreshing: "Refreshing report",
     collectComplete: "Collection complete",
     collectFailed: "Collection failed",
+    collectErrorTitle: "Failure reason",
+    collectTokenInvalidHint: "Longbridge access token is invalid. Refresh LONGBRIDGE_ACCESS_TOKEN in backend/.env and restart the backend.",
     recommendedTaxDue: "Recommended tax due",
     capitalTaxableGain: "Capital taxable gain",
     dividendIncome: "Dividend income",
@@ -260,6 +272,8 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     collectRefreshing: "正在刷新报告",
     collectComplete: "采集完成",
     collectFailed: "采集失败",
+    collectErrorTitle: "失败原因",
+    collectTokenInvalidHint: "Longbridge access token 无效。请更新 backend/.env 中的 LONGBRIDGE_ACCESS_TOKEN 并重启后端。",
     recommendedTaxDue: "建议口径应补税额",
     capitalTaxableGain: "资本应税收益",
     dividendIncome: "股息收入",
@@ -749,7 +763,7 @@ export function CrsTax() {
     const timer = window.setTimeout(() => {
       setCollectStartedAt(null);
       setCollectProgress(0);
-    }, 1_500);
+    }, latestTaxCollectJob.status === "failed" ? 8_000 : 1_500);
     return () => window.clearTimeout(timer);
   }, [collectStartedAt, latestTaxCollectJob, queryClient, year]);
 
@@ -798,6 +812,9 @@ export function CrsTax() {
         : reportQuery.isFetching || rawQuery.isFetching
           ? t("collectRefreshing")
           : t("collectRunning");
+  const collectErrorMessage = latestTaxCollectJob?.status === "failed"
+    ? formatCollectError(latestTaxCollectJob.error_message, t("collectTokenInvalidHint"))
+    : null;
   const rawKindLabel = (key: (typeof rawKinds)[number]) => {
     if (key === "executions") return t("rawExecutions");
     if (key === "orders") return t("rawOrders");
@@ -1033,6 +1050,12 @@ export function CrsTax() {
                         style={{ width: `${Math.max(4, collectProgress)}%` }}
                       />
                     </div>
+                    {collectErrorMessage && (
+                      <div className="mt-3 rounded-md border border-[var(--red)]/25 bg-[var(--red)]/10 px-3 py-2 font-mono text-[11px] leading-5 text-[var(--text-primary)]">
+                        <div className="font-semibold text-[var(--red)]">{t("collectErrorTitle")}</div>
+                        <div className="mt-1 break-words text-[var(--text-secondary)]">{collectErrorMessage}</div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

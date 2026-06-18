@@ -41,6 +41,7 @@ app.include_router(mega7.router)
 app.include_router(pelosi.router)
 app.include_router(whales_13f.duquesne_router)
 app.include_router(whales_13f.ackman_router)
+app.include_router(whales_13f.situational_router)
 app.include_router(tax.router)
 
 

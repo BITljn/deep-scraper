@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 duquesne_router = APIRouter(prefix="/api/duquesne", tags=["duquesne"])
 ackman_router = APIRouter(prefix="/api/ackman", tags=["ackman"])
+situational_router = APIRouter(prefix="/api/situational", tags=["situational"])
 
 _CACHE_TTL = 3600
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -22,28 +23,56 @@ _SEC_HEADERS = {
 _CUSIP_TICKERS = {
     "02079K107": "GOOG",
     "02079K305": "GOOGL",
+    "007903107": "AMD",
     "023135106": "AMZN",
     "037833100": "AAPL",
+    "038169207": "APLD",
+    "05614L209": "BW",
+    "09173B107": "BITF",
+    "093712107": "BE",
     "11271J107": "BN",
+    "11135F101": "AVGO",
     "169656105": "CMG",
+    "18452B209": "CLSK",
     "19247G107": "COHR",
+    "21873S108": "CRWV",
+    "21874A106": "CORZ",
+    "219350105": "GLW",
     "22266T109": "CPNG",
     "43300A203": "HLT",
+    "433921103": "HIVE",
     "44267D107": "HHH",
+    "456788108": "INFY",
     "457669307": "INSM",
+    "458140100": "INTC",
     "46137V357": "RSP",
     "464286400": "EWZ",
+    "595112103": "MU",
     "632307104": "NTRA",
+    "67066G104": "NVDA",
+    "68389X105": "ORCL",
+    "73933G202": "PSIX",
+    "74347M108": "PUMP",
     "76131D103": "QSR",
+    "767292105": "RIOT",
+    "778920306": "SAIH",
     "78464A763": "RSP",
+    "80004C200": "SNDK",
     "81141R100": "SE",
     "81369Y605": "XLF",
+    "83418M103": "SEI",
+    "35834F104": "TE",
     "874039100": "TSM",
     "881624209": "TEVA",
+    "92189F676": "SMH",
     "90353T100": "UBER",
     "92840M102": "VST",
     "980745103": "WWD",
+    "G11448100": "BTDR",
     "G2788T103": "CPNG",
+    "G96115103": "WYFI",
+    "N07059210": "ASML",
+    "Q4982L109": "IREN",
 }
 
 
@@ -78,6 +107,14 @@ _ACKMAN = _ManagerSpec(
     vehicle="Pershing Square Capital Management 13F Equity Portfolio",
     cik="0001336528",
     cik_int="1336528",
+    value_multiplier=1.0,
+)
+_SITUATIONAL = _ManagerSpec(
+    slug="situational",
+    manager="Leopold Aschenbrenner",
+    vehicle="Situational Awareness LP 13F Equity Portfolio",
+    cik="0002045724",
+    cik_int="2045724",
     value_multiplier=1.0,
 )
 
@@ -158,6 +195,7 @@ class _SecHolding(BaseModel):
     ticker: str
     value: float
     shares: float
+    put_call: str | None = None
 
 
 def _fmt_money(value: float | None) -> str:
@@ -227,6 +265,14 @@ def _ticker_for_holding(cusip: str, issuer: str) -> str:
     return " ".join(issuer.upper().split())[:10]
 
 
+def _display_ticker(ticker: str, put_call: str | None) -> str:
+    return f"{ticker} {put_call.upper()}" if put_call else ticker
+
+
+def _display_issuer(issuer: str, put_call: str | None) -> str:
+    return f"{issuer} {put_call.upper()}" if put_call else issuer
+
+
 async def _infotable_url(spec: _ManagerSpec, filing: _Filing) -> str:
     accession_path = filing.accession.replace("-", "")
     base_url = f"{spec.archive_base}/{accession_path}"
@@ -258,24 +304,27 @@ async def _infotable_url(spec: _ManagerSpec, filing: _Filing) -> str:
 async def _fetch_infotable(spec: _ManagerSpec, filing: _Filing) -> list[_SecHolding]:
     xml = await _get_text(await _infotable_url(spec, filing))
     root = ET.fromstring(xml)
-    grouped: dict[str, _SecHolding] = {}
+    grouped: dict[tuple[str, str | None], _SecHolding] = {}
 
     for info in root.findall(".//{*}infoTable"):
         issuer = _text(info, "nameOfIssuer")
         cusip = _text(info, "cusip").upper()
+        put_call = _text(info, "putCall") or None
         value = _parse_float(_text(info, "value")) * spec.value_multiplier
         shares = _parse_float(_text(info, "sshPrnamt"))
-        existing = grouped.get(cusip)
+        key = (cusip, put_call)
+        existing = grouped.get(key)
         if existing:
             existing.value += value
             existing.shares += shares
             continue
-        grouped[cusip] = _SecHolding(
+        grouped[key] = _SecHolding(
             issuer=issuer,
             cusip=cusip,
             ticker=_ticker_for_holding(cusip, issuer),
             value=value,
             shares=shares,
+            put_call=put_call,
         )
 
     return list(grouped.values())
@@ -318,15 +367,18 @@ def _build_overview(
     previous_holdings: list[_SecHolding] = data["previous_holdings"]
     fetched_at: float = data["fetched_at"]
 
-    prev_by_cusip = {holding.cusip: holding for holding in previous_holdings}
-    latest_by_cusip = {holding.cusip: holding for holding in latest_holdings}
+    def holding_key(holding: _SecHolding) -> tuple[str, str | None]:
+        return (holding.cusip, holding.put_call)
+
+    prev_by_key = {holding_key(holding): holding for holding in previous_holdings}
+    latest_by_key = {holding_key(holding): holding for holding in latest_holdings}
     total_value = sum(holding.value for holding in latest_holdings)
     ranked = sorted(latest_holdings, key=lambda item: item.value, reverse=True)
     holdings: list[HoldingOut] = []
     changes: list[ChangeOut] = []
 
     for rank, holding in enumerate(ranked, start=1):
-        previous_holding = prev_by_cusip.get(holding.cusip)
+        previous_holding = prev_by_key.get(holding_key(holding))
         shares_change = holding.shares - previous_holding.shares if previous_holding else holding.shares
         share_change_pct = (
             shares_change / previous_holding.shares * 100
@@ -347,8 +399,8 @@ def _build_overview(
         holdings.append(
             HoldingOut(
                 rank=rank,
-                ticker=holding.ticker,
-                company_name=holding.issuer,
+                ticker=_display_ticker(holding.ticker, holding.put_call),
+                company_name=_display_issuer(holding.issuer, holding.put_call),
                 price=None,
                 price_label="-",
                 market_value=holding.value,
@@ -366,8 +418,8 @@ def _build_overview(
                 ChangeOut(
                     date=latest.report_date,
                     fund="13F",
-                    ticker=holding.ticker,
-                    company_name=holding.issuer,
+                    ticker=_display_ticker(holding.ticker, holding.put_call),
+                    company_name=_display_issuer(holding.issuer, holding.put_call),
                     direction=activity,
                     market_value=abs(value_change),
                     market_value_label=_fmt_money(abs(value_change)),
@@ -378,14 +430,14 @@ def _build_overview(
             )
 
     for previous_holding in previous_holdings:
-        if previous_holding.cusip in latest_by_cusip:
+        if holding_key(previous_holding) in latest_by_key:
             continue
         changes.append(
             ChangeOut(
                 date=latest.report_date,
                 fund="13F",
-                ticker=previous_holding.ticker,
-                company_name=previous_holding.issuer,
+                ticker=_display_ticker(previous_holding.ticker, previous_holding.put_call),
+                company_name=_display_issuer(previous_holding.issuer, previous_holding.put_call),
                 direction="SOLD",
                 market_value=previous_holding.value,
                 market_value_label=_fmt_money(previous_holding.value),
@@ -464,3 +516,11 @@ async def get_ackman_overview(
     changes_limit: int = Query(100, ge=1, le=200),
 ) -> OverviewOut:
     return await _get_overview(_ACKMAN, holdings_limit, changes_limit)
+
+
+@situational_router.get("/overview", response_model=OverviewOut)
+async def get_situational_overview(
+    holdings_limit: int = Query(100, ge=1, le=200),
+    changes_limit: int = Query(100, ge=1, le=200),
+) -> OverviewOut:
+    return await _get_overview(_SITUATIONAL, holdings_limit, changes_limit)

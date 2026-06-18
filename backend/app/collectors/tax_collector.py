@@ -24,7 +24,7 @@ def _get_lb_config():
     s = get_settings()
     from longbridge.openapi import Config
 
-    return Config(
+    return Config.from_apikey(
         app_key=s.LONGBRIDGE_APP_KEY,
         app_secret=s.LONGBRIDGE_APP_SECRET,
         access_token=s.LONGBRIDGE_ACCESS_TOKEN,

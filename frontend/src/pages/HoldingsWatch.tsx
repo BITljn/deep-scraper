@@ -7,11 +7,12 @@ import { fetchBerkshireOverview } from "@/api/brk";
 import { fetchDuquesneOverview } from "@/api/duquesne";
 import { fetchHhOverview } from "@/api/hh";
 import { fetchPelosiOverview } from "@/api/pelosi";
+import { fetchSituationalOverview } from "@/api/situational";
 import { HoldingsDistributionChart } from "@/components/charts/HoldingsDistributionChart";
 import type { ArkTrade } from "@/api/types";
 
 const REFRESH_MS = 900_000;
-type Profile = "brk" | "ark" | "hh" | "pelosi" | "duquesne" | "ackman";
+type Profile = "brk" | "ark" | "hh" | "pelosi" | "duquesne" | "ackman" | "situational";
 type ProfileMode = "quarterly" | "etf" | "allocation";
 
 const PROFILES: Array<{
@@ -26,6 +27,7 @@ const PROFILES: Array<{
   { id: "pelosi", label: "Paul Pelosi", mode: "allocation", queryFn: fetchPelosiOverview },
   { id: "duquesne", label: "Druckenmiller", mode: "quarterly", queryFn: fetchDuquesneOverview },
   { id: "ackman", label: "Ackman", mode: "quarterly", queryFn: fetchAckmanOverview },
+  { id: "situational", label: "Aschenbrenner", mode: "quarterly", queryFn: fetchSituationalOverview },
 ];
 
 const container = {

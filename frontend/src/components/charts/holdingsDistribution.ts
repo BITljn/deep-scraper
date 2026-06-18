@@ -1,6 +1,13 @@
 import type { ArkHolding } from "@/api/types";
 
-export type DistributionProfile = "brk" | "ark" | "hh" | "pelosi" | "duquesne" | "ackman";
+export type DistributionProfile =
+  | "brk"
+  | "ark"
+  | "hh"
+  | "pelosi"
+  | "duquesne"
+  | "ackman"
+  | "situational";
 export type AvatarTone = "cyan" | "amber" | "green" | "red" | "violet" | "slate";
 
 export interface DistributionRow {
@@ -49,36 +56,55 @@ const PROFILE_META: Record<DistributionProfile, Omit<ProfileAvatar, "label">> = 
   pelosi: { initials: "P", tone: "violet" },
   duquesne: { initials: "SD", tone: "red" },
   ackman: { initials: "PSH", tone: "slate" },
+  situational: { initials: "SA", tone: "cyan" },
 };
 
 const LOGO_DOMAINS: Record<string, string> = {
   AAPL: "apple.com",
+  AMD: "amd.com",
+  ASML: "asml.com",
   AMZN: "amazon.com",
+  AVGO: "broadcom.com",
   AXP: "americanexpress.com",
   BAC: "bankofamerica.com",
+  BE: "bloomenergy.com",
+  BITF: "bitfarms.com",
   BN: "brookfield.com",
   BRK: "berkshirehathaway.com",
   "BRK.B": "berkshirehathaway.com",
+  BTDR: "bitdeer.com",
+  CLSK: "cleanspark.com",
   CMG: "chipotle.com",
   COIN: "coinbase.com",
+  CORZ: "corescientific.com",
   CP: "cpkcr.com",
+  CRWV: "coreweave.com",
   CVX: "chevron.com",
+  GLW: "corning.com",
   GOOGL: "google.com",
   GOOG: "google.com",
   HLT: "hilton.com",
+  INTC: "intel.com",
+  IREN: "iren.com",
   KHC: "kraftheinzcompany.com",
   KO: "coca-cola.com",
   MA: "mastercard.com",
   META: "meta.com",
   MCO: "moodys.com",
   MSFT: "microsoft.com",
+  MU: "micron.com",
   NFLX: "netflix.com",
   NVDA: "nvidia.com",
+  ORCL: "oracle.com",
   OXY: "oxy.com",
   QSR: "rbi.com",
+  RIOT: "riotplatforms.com",
   ROKU: "roku.com",
   SHOP: "shopify.com",
+  SMH: "vaneck.com",
+  SNDK: "sandisk.com",
   SQ: "block.xyz",
+  TSM: "tsmc.com",
   TSLA: "tesla.com",
   UNH: "unitedhealthgroup.com",
   V: "visa.com",
@@ -116,6 +142,6 @@ export function getProfileAvatar(
 }
 
 export function logoUrlForTicker(ticker: string): string | null {
-  const domain = LOGO_DOMAINS[ticker.toUpperCase()];
+  const domain = LOGO_DOMAINS[ticker.toUpperCase().split(" ")[0] ?? ""];
   return domain ? `https://logo.clearbit.com/${domain}` : null;
 }
