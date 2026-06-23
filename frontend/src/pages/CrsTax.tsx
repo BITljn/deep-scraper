@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { updateLongbridgeToken } from "@/api/admin";
 import { fetchCollectJobs } from "@/api/collect";
 import { fetchTaxRaw, fetchTaxReport, triggerTaxCollect } from "@/api/tax";
 import type { TaxScheme } from "@/api/types";
@@ -43,10 +44,15 @@ function normalizeSchemeKey(value: string | null): string {
 
 function formatCollectError(message: string | null | undefined, tokenInvalidHint: string): string | null {
   if (!message) return null;
-  if (message.includes("401004") || message.toLowerCase().includes("token invalid")) {
+  if (isLongbridgeTokenInvalid(message)) {
     return tokenInvalidHint + " (" + message + ")";
   }
   return message;
+}
+
+function isLongbridgeTokenInvalid(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return message.includes("401004") || message.toLowerCase().includes("token invalid");
 }
 
 type CopyKey =
@@ -60,6 +66,12 @@ type CopyKey =
   | "collectFailed"
   | "collectErrorTitle"
   | "collectTokenInvalidHint"
+  | "tokenRefreshTitle"
+  | "tokenRefreshPlaceholder"
+  | "tokenRefreshSubmit"
+  | "tokenRefreshSaving"
+  | "tokenRefreshSuccess"
+  | "tokenRefreshError"
   | "recommendedTaxDue"
   | "capitalTaxableGain"
   | "dividendIncome"
@@ -166,7 +178,13 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     collectComplete: "Collection complete",
     collectFailed: "Collection failed",
     collectErrorTitle: "Failure reason",
-    collectTokenInvalidHint: "Longbridge access token is invalid. Refresh LONGBRIDGE_ACCESS_TOKEN in backend/.env and restart the backend.",
+    collectTokenInvalidHint: "Longbridge access token is invalid. Paste a fresh token below, then collect again.",
+    tokenRefreshTitle: "Refresh Longbridge token",
+    tokenRefreshPlaceholder: "Paste new access token",
+    tokenRefreshSubmit: "Update token",
+    tokenRefreshSaving: "Updating...",
+    tokenRefreshSuccess: "Token updated",
+    tokenRefreshError: "Unable to update token",
     recommendedTaxDue: "Recommended tax due",
     capitalTaxableGain: "Capital taxable gain",
     dividendIncome: "Dividend income",
@@ -273,7 +291,13 @@ const copy: Record<Lang, Record<CopyKey, string>> = {
     collectComplete: "采集完成",
     collectFailed: "采集失败",
     collectErrorTitle: "失败原因",
-    collectTokenInvalidHint: "Longbridge access token 无效。请更新 backend/.env 中的 LONGBRIDGE_ACCESS_TOKEN 并重启后端。",
+    collectTokenInvalidHint: "Longbridge access token 无效。请在下方粘贴新 token，然后重新采集。",
+    tokenRefreshTitle: "更新 Longbridge token",
+    tokenRefreshPlaceholder: "粘贴新的 access token",
+    tokenRefreshSubmit: "更新 token",
+    tokenRefreshSaving: "更新中...",
+    tokenRefreshSuccess: "Token 已更新",
+    tokenRefreshError: "Token 更新失败",
     recommendedTaxDue: "建议口径应补税额",
     capitalTaxableGain: "资本应税收益",
     dividendIncome: "股息收入",
@@ -616,6 +640,7 @@ export function CrsTax() {
   const [selectedSchemeKey, setSelectedSchemeKey] = useState(() => normalizeSchemeKey(urlParams.get("scheme_key")));
   const [collectStartedAt, setCollectStartedAt] = useState<number | null>(null);
   const [collectProgress, setCollectProgress] = useState(0);
+  const [longbridgeTokenInput, setLongbridgeTokenInput] = useState("");
 
   const reportQuery = useQuery({
     queryKey: ["tax-report", year],
@@ -742,6 +767,12 @@ export function CrsTax() {
       }, 1_500);
     },
   });
+  const tokenMutation = useMutation({
+    mutationFn: () => updateLongbridgeToken(longbridgeTokenInput.trim()),
+    onSuccess: () => {
+      setLongbridgeTokenInput("");
+    },
+  });
 
   useEffect(() => {
     if (!collectStartedAt) return;
@@ -815,6 +846,8 @@ export function CrsTax() {
   const collectErrorMessage = latestTaxCollectJob?.status === "failed"
     ? formatCollectError(latestTaxCollectJob.error_message, t("collectTokenInvalidHint"))
     : null;
+  const collectErrorIsTokenInvalid =
+    latestTaxCollectJob?.status === "failed" && isLongbridgeTokenInvalid(latestTaxCollectJob.error_message);
   const rawKindLabel = (key: (typeof rawKinds)[number]) => {
     if (key === "executions") return t("rawExecutions");
     if (key === "orders") return t("rawOrders");
@@ -1038,22 +1071,66 @@ export function CrsTax() {
                     <span>{isCollecting ? collectProgressLabel : t("collect")}</span>
                   </button>
                 </div>
-                {isCollecting && (
+                {(isCollecting || collectErrorMessage) && (
                   <div className="mt-3 max-w-[560px] rounded-md border border-[var(--cyan)]/20 bg-[var(--cyan)]/5 p-3">
-                    <div className="flex items-center justify-between gap-3 font-mono text-[11px] text-[var(--text-secondary)]">
-                      <span>{collectProgressLabel}</span>
-                      <span className="text-[var(--cyan)]">{Math.round(collectProgress)}%</span>
-                    </div>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
-                      <div
-                        className="h-full rounded-full bg-[var(--cyan)] transition-all duration-500"
-                        style={{ width: `${Math.max(4, collectProgress)}%` }}
-                      />
-                    </div>
+                    {isCollecting && (
+                      <>
+                        <div className="flex items-center justify-between gap-3 font-mono text-[11px] text-[var(--text-secondary)]">
+                          <span>{collectProgressLabel}</span>
+                          <span className="text-[var(--cyan)]">{Math.round(collectProgress)}%</span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+                          <div
+                            className="h-full rounded-full bg-[var(--cyan)] transition-all duration-500"
+                            style={{ width: `${Math.max(4, collectProgress)}%` }}
+                          />
+                        </div>
+                      </>
+                    )}
                     {collectErrorMessage && (
                       <div className="mt-3 rounded-md border border-[var(--red)]/25 bg-[var(--red)]/10 px-3 py-2 font-mono text-[11px] leading-5 text-[var(--text-primary)]">
                         <div className="font-semibold text-[var(--red)]">{t("collectErrorTitle")}</div>
                         <div className="mt-1 break-words text-[var(--text-secondary)]">{collectErrorMessage}</div>
+                        {collectErrorIsTokenInvalid && (
+                          <form
+                            className="mt-3 space-y-2 border-t border-[var(--red)]/20 pt-3"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              if (longbridgeTokenInput.trim()) {
+                                tokenMutation.mutate();
+                              }
+                            }}
+                          >
+                            <div className="font-semibold text-[var(--text-primary)]">{t("tokenRefreshTitle")}</div>
+                            <div className="flex flex-col gap-2 sm:flex-row">
+                              <input
+                                value={longbridgeTokenInput}
+                                onChange={(event) => setLongbridgeTokenInput(event.target.value)}
+                                className="min-h-9 flex-1 rounded-md border border-white/[0.08] bg-[var(--bg-input)] px-3 font-mono text-xs text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--cyan)]/60"
+                                type="password"
+                                autoComplete="off"
+                                placeholder={t("tokenRefreshPlaceholder")}
+                              />
+                              <button
+                                type="submit"
+                                disabled={tokenMutation.isPending || !longbridgeTokenInput.trim()}
+                                className="min-h-9 rounded-md border border-[var(--cyan)]/40 bg-[var(--cyan)]/10 px-3 font-mono text-xs text-[var(--cyan)] transition-colors hover:border-[var(--cyan)]/70 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {tokenMutation.isPending ? t("tokenRefreshSaving") : t("tokenRefreshSubmit")}
+                              </button>
+                            </div>
+                            {tokenMutation.isSuccess && tokenMutation.data && (
+                              <div className="text-[var(--green)]">
+                                {t("tokenRefreshSuccess")}: {tokenMutation.data.token_preview ?? "****"}
+                              </div>
+                            )}
+                            {tokenMutation.isError && (
+                              <div className="break-words text-[var(--red)]">
+                                {t("tokenRefreshError")}: {tokenMutation.error.message}
+                              </div>
+                            )}
+                          </form>
+                        )}
                       </div>
                     )}
                   </div>

@@ -20,6 +20,13 @@ def _auth_user(request: Request) -> str | None:
     return None
 
 
+def require_admin(request: Request) -> str:
+    username = _auth_user(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return username
+
+
 @router.post("/login")
 async def login(payload: LoginInput, response: Response) -> dict[str, str]:
     if payload.username != LOGIN_USERNAME or payload.password != LOGIN_PASSWORD:
@@ -38,9 +45,7 @@ async def login(payload: LoginInput, response: Response) -> dict[str, str]:
 
 @router.get("/me")
 async def me(request: Request) -> dict[str, str]:
-    username = _auth_user(request)
-    if not username:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    username = require_admin(request)
     return {"username": username}
 
 

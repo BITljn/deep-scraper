@@ -1,5 +1,10 @@
 from functools import lru_cache
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 class Settings(BaseSettings):
@@ -26,7 +31,7 @@ class Settings(BaseSettings):
     LOG_DIR: str = "logs"
     LOG_LEVEL: str = "INFO"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = {"env_file": ENV_FILE, "env_file_encoding": "utf-8", "extra": "ignore"}
 
     def is_collector_enabled(self, name: str) -> bool:
         key = f"COLLECTOR_{name.upper()}_ENABLED"
