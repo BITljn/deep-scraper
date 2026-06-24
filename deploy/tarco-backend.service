@@ -6,13 +6,13 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-User=ubuntu
-Group=ubuntu
-WorkingDirectory=/home/ubuntu/dev/deep-scraper/backend
-Environment=PATH=/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+User=kevin
+Group=kevin
+WorkingDirectory=/mnt/mac/Users/liujianan/Develop/tarco/backend
+Environment=PATH=/home/kevin/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=HOST=127.0.0.1
 Environment=PORT=8000
-ExecStart=/home/ubuntu/.local/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+ExecStart=/home/kevin/.local/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 
