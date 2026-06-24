@@ -107,6 +107,40 @@ def test_fifo_lifo_weighted_and_highest_cost_change_taxable_gain() -> None:
     assert highest[0].gain_cny == Decimal("720.00")
 
 
+def test_fifo_and_highest_cost_keep_correct_lot_state_across_multiple_sells() -> None:
+    executions = [
+        _execution("t1", "b_low", "ABC.US", "2024-01-02T10:00:00", "10", "10"),
+        _execution("t2", "b_high", "ABC.US", "2024-02-02T10:00:00", "40", "10"),
+        _execution("t3", "b_mid", "ABC.US", "2024-03-02T10:00:00", "20", "10"),
+        _execution("t4", "s1", "ABC.US", "2025-01-02T10:00:00", "30", "15"),
+        _execution("t5", "s2", "ABC.US", "2025-02-02T10:00:00", "35", "10"),
+    ]
+    orders = {
+        "b_low": _order("b_low", "ABC.US", "Buy", "10"),
+        "b_high": _order("b_high", "ABC.US", "Buy", "10"),
+        "b_mid": _order("b_mid", "ABC.US", "Buy", "10"),
+        "s1": _order("s1", "ABC.US", "Sell", "15"),
+        "s2": _order("s2", "ABC.US", "Sell", "10"),
+    }
+
+    fifo = _calculate_sales(executions, orders, {}, _fx(), 2025, "fifo", date(2026, 5, 31))
+    highest = _calculate_sales(executions, orders, {}, _fx(), 2025, "highest_cost", date(2026, 5, 31))
+
+    assert [sale.cost_cny for sale in fifo] == [Decimal("2160.00"), Decimal("2160.00")]
+    assert [sale.gain_cny for sale in fifo] == [Decimal("1080.00"), Decimal("360.00")]
+    assert [match["buy_order_id"] for match in fifo[0].matches] == ["b_low", "b_high"]
+    assert [match["matched_quantity"] for match in fifo[0].matches] == ["10", "5"]
+    assert [match["buy_order_id"] for match in fifo[1].matches] == ["b_high", "b_mid"]
+    assert [match["matched_quantity"] for match in fifo[1].matches] == ["5", "5"]
+
+    assert [sale.cost_cny for sale in highest] == [Decimal("3600.00"), Decimal("1080.00")]
+    assert [sale.gain_cny for sale in highest] == [Decimal("-360.00"), Decimal("1440.00")]
+    assert [match["buy_order_id"] for match in highest[0].matches] == ["b_high", "b_mid"]
+    assert [match["matched_quantity"] for match in highest[0].matches] == ["10", "5"]
+    assert [match["buy_order_id"] for match in highest[1].matches] == ["b_mid", "b_low"]
+    assert [match["matched_quantity"] for match in highest[1].matches] == ["5", "5"]
+
+
 def test_cost_trace_includes_buy_lot_share_remaining() -> None:
     executions = [
         _execution("t1", "b1", "ABC.US", "2024-01-02T10:00:00", "10", "16"),
@@ -245,6 +279,95 @@ def test_loss_policies_affect_taxable_gain() -> None:
     assert portfolio["capital_taxable_gain_cny"] == "0.00"
     assert per_sale["is_explainable"] is True
     assert portfolio["is_explainable"] is False
+
+
+def test_fifo_loss_offset_policies_change_taxable_gain_and_tax() -> None:
+    executions = [
+        _execution("t1", "abc_buy_low", "ABC.US", "2024-01-02T10:00:00", "10", "10"),
+        _execution("t2", "abc_buy_high", "ABC.US", "2024-02-02T10:00:00", "30", "10"),
+        _execution("t3", "abc_sell_gain", "ABC.US", "2025-01-02T10:00:00", "40", "10"),
+        _execution("t4", "abc_sell_loss", "ABC.US", "2025-02-02T10:00:00", "20", "10"),
+        _execution("t5", "bbb_buy", "BBB.US", "2024-01-02T10:00:00", "50", "10"),
+        _execution("t6", "bbb_sell_loss", "BBB.US", "2025-03-02T10:00:00", "20", "10"),
+    ]
+    orders = {
+        "abc_buy_low": _order("abc_buy_low", "ABC.US", "Buy", "10"),
+        "abc_buy_high": _order("abc_buy_high", "ABC.US", "Buy", "10"),
+        "abc_sell_gain": _order("abc_sell_gain", "ABC.US", "Sell", "10"),
+        "abc_sell_loss": _order("abc_sell_loss", "ABC.US", "Sell", "10"),
+        "bbb_buy": _order("bbb_buy", "BBB.US", "Buy", "10"),
+        "bbb_sell_loss": _order("bbb_sell_loss", "BBB.US", "Sell", "10"),
+    }
+
+    sales = _calculate_sales(executions, orders, {}, _fx(), 2025, "fifo", date(2026, 5, 31))
+    per_sale = _scheme_from_sales("fifo", "per_sale", sales)
+    symbol_net = _scheme_from_sales("fifo", "symbol_net", sales)
+    portfolio_net = _scheme_from_sales("fifo", "portfolio_net", sales)
+
+    assert [sale.gain_cny for sale in sales] == [Decimal("2160.00"), Decimal("-720.00"), Decimal("-2160.00")]
+    assert per_sale["capital_realized_gain_cny"] == "-720.00"
+    assert per_sale["capital_taxable_gain_cny"] == "2160.00"
+    assert per_sale["capital_tax_cny"] == "432.00"
+    assert symbol_net["capital_taxable_gain_cny"] == "1440.00"
+    assert symbol_net["capital_tax_cny"] == "288.00"
+    assert portfolio_net["capital_taxable_gain_cny"] == "0.00"
+    assert portfolio_net["capital_tax_cny"] == "0.00"
+
+
+def test_highest_cost_loss_offset_policies_change_taxable_gain_and_tax() -> None:
+    executions = [
+        _execution("t1", "abc_buy_low", "ABC.US", "2024-01-02T10:00:00", "10", "10"),
+        _execution("t2", "abc_buy_high", "ABC.US", "2024-02-02T10:00:00", "30", "10"),
+        _execution("t3", "abc_sell_one", "ABC.US", "2025-01-02T10:00:00", "40", "10"),
+        _execution("t4", "abc_sell_two", "ABC.US", "2025-02-02T10:00:00", "20", "10"),
+        _execution("t5", "bbb_buy", "BBB.US", "2024-01-02T10:00:00", "50", "10"),
+        _execution("t6", "bbb_sell_loss", "BBB.US", "2025-03-02T10:00:00", "20", "10"),
+    ]
+    orders = {
+        "abc_buy_low": _order("abc_buy_low", "ABC.US", "Buy", "10"),
+        "abc_buy_high": _order("abc_buy_high", "ABC.US", "Buy", "10"),
+        "abc_sell_one": _order("abc_sell_one", "ABC.US", "Sell", "10"),
+        "abc_sell_two": _order("abc_sell_two", "ABC.US", "Sell", "10"),
+        "bbb_buy": _order("bbb_buy", "BBB.US", "Buy", "10"),
+        "bbb_sell_loss": _order("bbb_sell_loss", "BBB.US", "Sell", "10"),
+    }
+
+    sales = _calculate_sales(executions, orders, {}, _fx(), 2025, "highest_cost", date(2026, 5, 31))
+    per_sale = _scheme_from_sales("highest_cost", "per_sale", sales)
+    symbol_net = _scheme_from_sales("highest_cost", "symbol_net", sales)
+    portfolio_net = _scheme_from_sales("highest_cost", "portfolio_net", sales)
+
+    assert [sale.gain_cny for sale in sales] == [Decimal("720.00"), Decimal("720.00"), Decimal("-2160.00")]
+    assert [sale.matches[0]["buy_order_id"] for sale in sales] == ["abc_buy_high", "abc_buy_low", "bbb_buy"]
+    assert per_sale["capital_realized_gain_cny"] == "-720.00"
+    assert per_sale["capital_taxable_gain_cny"] == "1440.00"
+    assert per_sale["capital_tax_cny"] == "288.00"
+    assert symbol_net["capital_taxable_gain_cny"] == "1440.00"
+    assert symbol_net["capital_tax_cny"] == "288.00"
+    assert portfolio_net["capital_taxable_gain_cny"] == "0.00"
+    assert portfolio_net["capital_tax_cny"] == "0.00"
+
+
+def test_buy_cost_and_sell_fee_are_deducted_from_fifo_and_highest_cost_gain() -> None:
+    executions = [
+        _execution("t1", "b1", "ABC.US", "2024-01-02T10:00:00", "10", "10"),
+        _execution("t2", "s1", "ABC.US", "2025-01-02T10:00:00", "20", "10"),
+    ]
+    orders = {
+        "b1": _order("b1", "ABC.US", "Buy", "10"),
+        "s1": _order("s1", "ABC.US", "Sell", "10"),
+    }
+    fees_by_order = {"b1": Decimal("5"), "s1": Decimal("3")}
+
+    fifo = _calculate_sales(executions, orders, fees_by_order, _fx(), 2025, "fifo", date(2026, 5, 31))
+    highest = _calculate_sales(executions, orders, fees_by_order, _fx(), 2025, "highest_cost", date(2026, 5, 31))
+
+    for sales in [fifo, highest]:
+        assert sales[0].proceeds_cny == Decimal("1418.40")
+        assert sales[0].cost_cny == Decimal("756.00")
+        assert sales[0].fee_cny == Decimal("21.60")
+        assert sales[0].gain_cny == Decimal("662.40")
+        assert sales[0].matches[0]["buy_fee_cny"] == "36.00"
 
 
 def test_dividend_income_and_withholding_tax_are_separated() -> None:

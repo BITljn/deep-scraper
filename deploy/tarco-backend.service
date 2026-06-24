@@ -8,11 +8,14 @@ Requires=postgresql.service
 Type=simple
 User=kevin
 Group=kevin
-WorkingDirectory=/mnt/mac/Users/liujianan/Develop/tarco/backend
-Environment=PATH=/home/kevin/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/home/kevin/tarco/bin/backend
+Environment=TARCO_HOME=/home/kevin/tarco
+Environment=PATH=/home/kevin/tarco/bin/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=LOG_DIR=/home/kevin/tarco/log
 Environment=HOST=127.0.0.1
 Environment=PORT=8000
-ExecStart=/home/kevin/.local/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+EnvironmentFile=-/home/kevin/tarco/conf/backend.env
+ExecStart=/home/kevin/tarco/bin/tarco-backend
 Restart=always
 RestartSec=5
 
