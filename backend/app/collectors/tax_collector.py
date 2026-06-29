@@ -15,20 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.collectors.base import BaseCollector
 from app.config import get_settings
+from app.longbridge_config import get_longbridge_config
 from app.models import TaxCashFlow, TaxExecution, TaxOrder, TaxOrderFee
 
 logger = logging.getLogger(__name__)
 
 
 def _get_lb_config():
-    s = get_settings()
-    from longbridge.openapi import Config
-
-    return Config.from_apikey(
-        app_key=s.LONGBRIDGE_APP_KEY,
-        app_secret=s.LONGBRIDGE_APP_SECRET,
-        access_token=s.LONGBRIDGE_ACCESS_TOKEN,
-    )
+    return get_longbridge_config()
 
 
 def _dec(val) -> Decimal:

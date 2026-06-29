@@ -15,6 +15,7 @@ from typing import Any, Callable
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 CACHE_ROOT = ROOT / ".cache" / "longbridge_tax_sdk"
 DEFAULT_ORDER_FIELDS = [
     "order_id",
@@ -322,7 +323,7 @@ def cache_dir(args: argparse.Namespace) -> Path:
 
 
 def sdk_config():
-    from longbridge.openapi import Config
+    from app.longbridge_config import create_longbridge_config
 
     load_dotenv(ROOT / ".env")
     app_key = os.environ.get("LONGBRIDGE_APP_KEY", "")
@@ -330,7 +331,7 @@ def sdk_config():
     access_token = os.environ.get("LONGBRIDGE_ACCESS_TOKEN", "")
     if not app_key or not app_secret or not access_token:
         raise RuntimeError("Missing LONGBRIDGE_APP_KEY/LONGBRIDGE_APP_SECRET/LONGBRIDGE_ACCESS_TOKEN in backend/.env")
-    return Config.from_apikey(app_key=app_key, app_secret=app_secret, access_token=access_token)
+    return create_longbridge_config(app_key=app_key, app_secret=app_secret, access_token=access_token)
 
 
 def fetch(args: argparse.Namespace) -> None:
